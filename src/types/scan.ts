@@ -38,6 +38,19 @@ export interface SavedScanAccountSummary {
   isActive: boolean;
 }
 
+export interface ScanCrawlProgress {
+  botKey: string;
+  botLabel: string;
+  state: 'running' | 'completed' | 'stopped' | 'error';
+  visitedCount: number;
+  queuedCount: number;
+  maxSteps: number;
+  currentLabel?: string;
+  startedAt: string;
+  finishedAt?: string;
+  error?: string;
+}
+
 export interface ScanStatusResponse {
   state: ScanConnectionState;
   isConnected: boolean;
@@ -49,6 +62,7 @@ export interface ScanStatusResponse {
   activeTargetBot?: string | null;
   error?: string | null;
   capturedBotCount: number;
+  crawlProgress?: ScanCrawlProgress | null;
 }
 
 export interface CapturedButtonSnapshot {

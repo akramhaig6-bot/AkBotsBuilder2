@@ -239,6 +239,112 @@ export interface ScanBlueprintBuildOutput {
   resolvedEvents: ResolvedScanEventInfo[];
 }
 
+export type ScanNavStep =
+  | { type: 'command'; text: string }
+  | { type: 'reply'; buttonId: string; text: string }
+  | { type: 'inline'; buttonId: string; callbackData: string; text: string };
+
+function mergeCapturedSubButtons(
+  existing: BotButton[] | undefined,
+  incoming: BotButton[],
+  withinSameBurst: boolean,
+  removeReplyKeyboard?: boolean
+): BotButton[] {
+  const prev = existing || [];
+  if (prev.length === 0) return incoming;
+  if (incoming.length === 0) {
+    return removeReplyKeyboard ? prev.filter((b) => b.type !== 'reply') : prev;
+  }
+
+  const incomingHasInline = incoming.some((b) => b.type === 'inline');
+  const incomingHasReply = incoming.some((b) => b.type === 'reply');
+
+  const keptFromPrev = prev.filter((b) => {
+    if (removeReplyKeyboard && b.type === 'reply') return false;
+    if (b.type === 'inline' && incomingHasInline && !withinSameBurst) return false;
+    if (b.type === 'reply' && incomingHasReply && !withinSameBurst) return false;
+    return true;
+  });
+
+  const merged: BotButton[] = [...keptFromPrev];
+  const seenKeys = new Set(
+    merged.map((b) => `${b.type}|${b.callbackData || b.url || b.text}`)
+  );
+
+  for (const btn of incoming) {
+    const k = `${btn.type}|${btn.callbackData || btn.url || btn.text}`;
+    if (!seenKeys.has(k)) {
+      seenKeys.add(k);
+      merged.push(btn);
+    }
+  }
+  return merged;
+}
+
+function matchPassiveButtonByText(
+  evText: string,
+  candidates: BotButton[],
+  claimedIds: Set<string>
+): BotButton | undefined {
+  const lines = evText
+    .split('\n')
+    .map((l) => normalizeLabel(l))
+    .filter((l) => l.length >= 2)
+    .slice(0, 2);
+
+  if (lines.length === 0) return undefined;
+
+  const unclaimed = candidates.filter(
+    (b) => b.type === 'inline' && !claimedIds.has(b.id)
+  );
+  if (unclaimed.length === 0) return undefined;
+
+  // 1) Exact or full-phrase containment match
+  for (const lineNorm of lines) {
+    const exact = unclaimed.find((b) => {
+      const btnNorm = normalizeLabel(b.text);
+      return (
+        btnNorm.length >= 2 &&
+        (lineNorm === btnNorm || lineNorm.includes(btnNorm))
+      );
+    });
+    if (exact) return exact;
+  }
+
+  // 2) Meaningful word overlap (>= 1 distinct multi-char word match in heading)
+  const headingWords = new Set(
+    lines[0].split(/\s+/).filter((w) => w.length >= 3)
+  );
+  if (headingWords.size === 0) return undefined;
+
+  let bestBtn: BotButton | undefined;
+  let bestScore = 0;
+  let tied = false;
+
+  for (const btn of unclaimed) {
+    const btnWords = normalizeLabel(btn.text)
+      .split(/\s+/)
+      .filter((w) => w.length >= 3);
+    if (btnWords.length === 0) continue;
+
+    let overlap = 0;
+    for (const w of btnWords) {
+      if (headingWords.has(w)) overlap += 1;
+    }
+    if (overlap > 0) {
+      if (overlap > bestScore) {
+        bestScore = overlap;
+        bestBtn = btn;
+        tied = false;
+      } else if (overlap === bestScore) {
+        tied = true;
+      }
+    }
+  }
+
+  return bestScore > 0 && !tied ? bestBtn : undefined;
+}
+
 export function buildBlueprintFromCapturedBot(
   record: CapturedBotRecord
 ): ScanBlueprintBuildOutput {
@@ -247,16 +353,15 @@ export function buildBlueprintFromCapturedBot(
   );
   const overrides = record.manualParentOverrides || {};
 
-  // Pick start event:
-  // 1) Latest event explicitly assigned to '__start__' via override or parentButtonId
-  // 2) Else latest 'start_response' (not overridden away from start)
-  // 3) Else first non-alert incoming event that has text/media/buttons (and not overridden)
-  let startEvent: CapturedMessageEvent | undefined;
+  // Pick start event(s) — supporting multi-message /start responses (e.g. msg 1 Reply keyboard + msg 2 Inline menu):
+  let startEvents: CapturedMessageEvent[] = [];
   const explicitStarts = events.filter(
-    (ev) => overrides[ev.id] === '__start__' || (overrides[ev.id] === undefined && ev.parentButtonId === '__start__')
+    (ev) =>
+      overrides[ev.id] === '__start__' ||
+      (overrides[ev.id] === undefined && ev.parentButtonId === '__start__')
   );
   if (explicitStarts.length > 0) {
-    startEvent = explicitStarts[explicitStarts.length - 1];
+    startEvents = explicitStarts;
   } else {
     const startResponses = events.filter(
       (ev) =>
@@ -265,9 +370,32 @@ export function buildBlueprintFromCapturedBot(
         !ev.parentButtonId
     );
     if (startResponses.length > 0) {
-      startEvent = startResponses[startResponses.length - 1];
+      const latestStart = startResponses[startResponses.length - 1];
+      const latestTs = new Date(latestStart.timestamp).getTime();
+      // Include sibling /start response messages sent within 10s of the latest /start burst
+      startEvents = startResponses.filter(
+        (ev) => Math.abs(latestTs - new Date(ev.timestamp).getTime()) <= 10_000
+      );
+      // Also check immediate follow-up 'auto' message right after latestStart before any other interaction
+      const latestIdx = events.findIndex((e) => e.id === latestStart.id);
+      if (latestIdx >= 0) {
+        for (let i = latestIdx + 1; i < events.length; i++) {
+          const nextEv = events[i];
+          if (
+            nextEv.triggerType === 'auto' &&
+            nextEv.kind === 'new_message' &&
+            overrides[nextEv.id] === undefined &&
+            !nextEv.parentButtonId &&
+            new Date(nextEv.timestamp).getTime() - latestTs <= 4_000
+          ) {
+            startEvents.push(nextEv);
+          } else {
+            break;
+          }
+        }
+      }
     } else {
-      startEvent = events.find(
+      const firstMeaningful = events.find(
         (ev) =>
           ev.kind !== 'callback_alert' &&
           overrides[ev.id] === undefined &&
@@ -278,37 +406,67 @@ export function buildBlueprintFromCapturedBot(
             ev.inlineButtons.length > 0 ||
             ev.replyButtons.length > 0)
       );
+      if (firstMeaningful) startEvents = [firstMeaningful];
     }
   }
 
-  const inlineButtons: BotButton[] = startEvent
-    ? startEvent.inlineButtons.map((b) => snapshotToBotButton(b, null))
-    : [];
-  const replyButtons: BotButton[] = startEvent
-    ? startEvent.replyButtons.map((b) => snapshotToBotButton(b, null))
-    : [];
+  const startEventIds = new Set(startEvents.map((e) => e.id));
+  const primaryStartEvent = startEvents[startEvents.length - 1];
+
+  const inlineButtons: BotButton[] = [];
+  const replyButtons: BotButton[] = [];
+  const seenRootInline = new Set<string>();
+  const seenRootReply = new Set<string>();
+
+  for (const se of startEvents) {
+    for (const b of se.inlineButtons) {
+      const k = `${b.row}:${b.order}:${b.callbackData || b.url || b.text}`;
+      if (!seenRootInline.has(k)) {
+        seenRootInline.add(k);
+        inlineButtons.push(snapshotToBotButton(b, null));
+      }
+    }
+    for (const b of se.replyButtons) {
+      const k = `${b.row}:${b.order}:${b.text}`;
+      if (!seenRootReply.has(k)) {
+        seenRootReply.add(k);
+        replyButtons.push(snapshotToBotButton(b, null));
+      }
+    }
+  }
 
   const buttonFlows: Record<string, ButtonFlow> = {};
   const buttonRegistry = new Map<string, BotButton>();
   const messageButtonsMap = new Map<number, BotButton[]>();
   const claimedInlineButtonIds = new Set<string>();
+  const flowLastEventTs = new Map<string, number>();
 
   const registerButtons = (buttons: BotButton[], telegramMessageId?: number) => {
     for (const b of buttons) {
       buttonRegistry.set(b.id, b);
     }
-    if (telegramMessageId) {
-      messageButtonsMap.set(telegramMessageId, buttons);
+    if (telegramMessageId && buttons.length > 0) {
+      const existing = messageButtonsMap.get(telegramMessageId) || [];
+      const mergedMap = new Map<string, BotButton>();
+      for (const b of existing) mergedMap.set(b.id, b);
+      for (const b of buttons) mergedMap.set(b.id, b);
+      messageButtonsMap.set(telegramMessageId, Array.from(mergedMap.values()));
     }
   };
 
-  registerButtons(
-    [...inlineButtons, ...replyButtons],
-    startEvent?.telegramMessageId
-  );
+  for (const se of startEvents) {
+    registerButtons(
+      [
+        ...se.inlineButtons.map((b) => snapshotToBotButton(b, null)),
+        ...se.replyButtons.map((b) => snapshotToBotButton(b, null)),
+      ],
+      se.telegramMessageId
+    );
+  }
 
-  // Track the latest visible reply keyboard buttons for reply-text matching
+  // Track the latest visible reply & active menu buttons for passive matching
   let activeReplyButtons: BotButton[] = [...replyButtons];
+  let latestActiveInlineButtons: BotButton[] = [...inlineButtons];
 
   const commandsMap = new Map<string, BotCommandConfig>();
   for (const cmd of record.commands || []) {
@@ -327,7 +485,7 @@ export function buildBlueprintFromCapturedBot(
   const resolvedEvents: ResolvedScanEventInfo[] = [];
 
   for (const ev of events) {
-    if (startEvent && ev.id === startEvent.id) {
+    if (startEventIds.has(ev.id)) {
       const candidates = [...inlineButtons, ...replyButtons].map((b) => ({
         id: b.id,
         text: b.text,
@@ -357,6 +515,7 @@ export function buildBlueprintFromCapturedBot(
     if (ev.telegramMessageId && messageButtonsMap.has(ev.telegramMessageId)) {
       messageButtonsMap.get(ev.telegramMessageId)!.forEach(addCandidate);
     }
+    latestActiveInlineButtons.forEach(addCandidate);
     activeReplyButtons.forEach(addCandidate);
     for (const b of buttonRegistry.values()) {
       addCandidate(b);
@@ -371,6 +530,13 @@ export function buildBlueprintFromCapturedBot(
     // 1) Explicit manual override to '__start__'
     const manualTarget = overrides[ev.id];
     if (manualTarget === '__start__') {
+      registerButtons(
+        [
+          ...ev.inlineButtons.map((b) => snapshotToBotButton(b, null)),
+          ...ev.replyButtons.map((b) => snapshotToBotButton(b, null)),
+        ],
+        ev.telegramMessageId
+      );
       resolvedEvents.push({
         eventId: ev.id,
         assignedTo: 'start',
@@ -409,19 +575,15 @@ export function buildBlueprintFromCapturedBot(
         candidateList.find((b) => b.text.trim() === triggerNorm);
     }
 
-    // 3) Heuristic for passive Telegram Desktop/Mobile edit_message where title clearly reflects button
-    if (!targetBtn && ev.kind === 'edit_message' && ev.text.trim()) {
-      const msgButtons = messageButtonsMap.get(ev.telegramMessageId) || [];
-      const firstLineNorm = normalizeLabel(ev.text.split('\n')[0] || '');
-      if (firstLineNorm.length >= 2) {
-        const unclaimedInline = msgButtons.filter(
-          (b) => b.type === 'inline' && !claimedInlineButtonIds.has(b.id)
-        );
-        targetBtn = unclaimedInline.find((b) => {
-          const btnNorm = normalizeLabel(b.text);
-          return btnNorm.length >= 2 && (firstLineNorm === btnNorm || firstLineNorm.includes(btnNorm));
-        });
-      }
+    // 3) Heuristic for passive Telegram Desktop/Mobile interactions (both edit_message & follow-up new_message)
+    if (
+      !targetBtn &&
+      (ev.kind === 'edit_message' || ev.triggerType === 'auto') &&
+      ev.text.trim()
+    ) {
+      const msgButtons =
+        messageButtonsMap.get(ev.telegramMessageId) || latestActiveInlineButtons;
+      targetBtn = matchPassiveButtonByText(ev.text, msgButtons, claimedInlineButtonIds);
     }
 
     // 4) Slash commands like /help or /about (excluding /start)
@@ -445,11 +607,27 @@ export function buildBlueprintFromCapturedBot(
           ...ev.replyButtons.map((b) => snapshotToBotButton(b, flowId)),
         ];
         registerButtons(subButtons, ev.telegramMessageId);
+        if (ev.inlineButtons.length > 0) {
+          latestActiveInlineButtons = ev.inlineButtons.map((b) => snapshotToBotButton(b, flowId));
+        }
         if (ev.replyButtons.length > 0) {
           activeReplyButtons = ev.replyButtons.map((b) => snapshotToBotButton(b, flowId));
         }
 
-        const actions = buildEventFlowActions(ev);
+        const existingCmdFlow = buttonFlows[flowId];
+        const prevTs = flowLastEventTs.get(flowId) || 0;
+        const evTs = new Date(ev.timestamp).getTime();
+        const withinBurst = prevTs > 0 && Math.abs(evTs - prevTs) <= 12_000;
+        flowLastEventTs.set(flowId, evTs);
+
+        const mergedSubButtons = mergeCapturedSubButtons(
+          existingCmdFlow?.subButtons,
+          subButtons,
+          withinBurst,
+          ev.replyKeyboardSettings?.removeKeyboard
+        );
+
+        const actions = mergeFlowActions(existingCmdFlow?.actions, buildEventFlowActions(ev));
         buttonFlows[flowId] = {
           id: flowId,
           buttonId: flowId,
@@ -462,11 +640,15 @@ export function buildBlueprintFromCapturedBot(
                 parseMode: ev.parseMode || 'none',
                 updateMode: 'new',
               }
-            : null,
-          media: ev.media || [],
-          subButtons,
+            : existingCmdFlow?.message || null,
+          media: (ev.media?.length || 0) > 0 ? ev.media : existingCmdFlow?.media || [],
+          subButtons: mergedSubButtons,
           ...(actions.length > 0 ? { actions } : {}),
-          ...(ev.replyKeyboardSettings ? { replyKeyboardSettings: ev.replyKeyboardSettings } : {}),
+          ...(ev.replyKeyboardSettings
+            ? { replyKeyboardSettings: ev.replyKeyboardSettings }
+            : existingCmdFlow?.replyKeyboardSettings
+            ? { replyKeyboardSettings: existingCmdFlow.replyKeyboardSettings }
+            : {}),
         };
 
         const existingCmd = commandsMap.get(cmdName);
@@ -488,6 +670,25 @@ export function buildBlueprintFromCapturedBot(
     }
 
     if (!targetBtn) {
+      // CRITICAL: Even if this passive screen from Telegram is unassigned yet, register ALL its buttons
+      // so nested sub-menus clicked from inside Telegram or Simulator can still resolve and link cleanly!
+      const fallbackScope = `msg_${ev.telegramMessageId}`;
+      const unregisteredButtons = [
+        ...ev.inlineButtons.map((b) => snapshotToBotButton(b, fallbackScope)),
+        ...ev.replyButtons.map((b) => snapshotToBotButton(b, fallbackScope)),
+      ];
+      registerButtons(unregisteredButtons, ev.telegramMessageId);
+      if (ev.inlineButtons.length > 0) {
+        latestActiveInlineButtons = ev.inlineButtons.map((b) =>
+          snapshotToBotButton(b, fallbackScope)
+        );
+      }
+      if (ev.replyButtons.length > 0) {
+        activeReplyButtons = ev.replyButtons.map((b) =>
+          snapshotToBotButton(b, fallbackScope)
+        );
+      }
+
       resolvedEvents.push({
         eventId: ev.id,
         assignedTo: 'unassigned',
@@ -497,7 +698,7 @@ export function buildBlueprintFromCapturedBot(
       continue;
     }
 
-    // Link event cleanly into buttonFlows[targetBtn.id]
+    // Link event cleanly into buttonFlows[targetBtn.id] & attach ALL appeared buttons of its menu
     if (targetBtn.type === 'inline') {
       claimedInlineButtonIds.add(targetBtn.id);
     }
@@ -510,6 +711,11 @@ export function buildBlueprintFromCapturedBot(
       ...ev.replyButtons.map((b) => snapshotToBotButton(b, targetBtn!.id)),
     ];
     registerButtons(subButtons, ev.telegramMessageId);
+    if (ev.inlineButtons.length > 0) {
+      latestActiveInlineButtons = ev.inlineButtons.map((b) =>
+        snapshotToBotButton(b, targetBtn!.id)
+      );
+    }
     if (ev.replyButtons.length > 0) {
       activeReplyButtons = ev.replyButtons.map((b) =>
         snapshotToBotButton(b, targetBtn!.id)
@@ -517,10 +723,25 @@ export function buildBlueprintFromCapturedBot(
     }
 
     const existingFlow = buttonFlows[targetBtn.id];
+    const prevTs = flowLastEventTs.get(targetBtn.id) || 0;
+    const evTs = new Date(ev.timestamp).getTime();
+    const withinBurst = prevTs > 0 && Math.abs(evTs - prevTs) <= 12_000;
+    flowLastEventTs.set(targetBtn.id, evTs);
+
+    const mergedSubButtons = mergeCapturedSubButtons(
+      existingFlow?.subButtons,
+      subButtons,
+      withinBurst,
+      ev.replyKeyboardSettings?.removeKeyboard
+    );
+
     const newActions = buildEventFlowActions(ev);
     const mergedActions = mergeFlowActions(existingFlow?.actions, newActions);
 
-    const hasBodyContent = Boolean(ev.text.trim()) || (ev.media?.length || 0) > 0 || subButtons.length > 0;
+    const hasBodyContent =
+      Boolean(ev.text.trim()) ||
+      (ev.media?.length || 0) > 0 ||
+      mergedSubButtons.length > 0;
     const isAlertOnly = ev.kind === 'callback_alert' && !hasBodyContent;
 
     buttonFlows[targetBtn.id] = {
@@ -532,21 +753,22 @@ export function buildBlueprintFromCapturedBot(
         ? existingFlow?.message || null
         : hasBodyContent
         ? {
-            text: ev.text,
-            isSaved: Boolean(ev.text.trim()),
-            parseMode: ev.parseMode || 'none',
+            text: ev.text.trim()
+              ? ev.text
+              : existingFlow?.message?.text || '',
+            isSaved: Boolean(ev.text.trim() || existingFlow?.message?.text?.trim()),
+            parseMode: ev.parseMode || existingFlow?.message?.parseMode || 'none',
             updateMode: ev.kind === 'edit_message' ? 'edit' : 'new',
-            ...(ev.text.trim() ? {} : { skipMessage: false }),
+            ...(ev.text.trim() || existingFlow?.message?.text?.trim()
+              ? {}
+              : { skipMessage: false }),
           }
         : existingFlow?.message || null,
       media:
         (ev.media?.length || 0) > 0
           ? ev.media
           : existingFlow?.media || [],
-      subButtons:
-        subButtons.length > 0
-          ? subButtons
-          : existingFlow?.subButtons || [],
+      subButtons: mergedSubButtons,
       ...(mergedActions.length > 0 ? { actions: mergedActions } : {}),
       ...(ev.replyKeyboardSettings
         ? { replyKeyboardSettings: ev.replyKeyboardSettings }
@@ -571,14 +793,25 @@ export function buildBlueprintFromCapturedBot(
 
   const commandsList = Array.from(commandsMap.values());
 
+  const combinedStartText = startEvents
+    .map((e) => e.text)
+    .filter((t) => Boolean(t && t.trim()))
+    .join('\n\n');
+  const combinedStartMedia = startEvents.flatMap((e) => e.media || []);
+  const startParseMode =
+    startEvents.find((e) => e.parseMode && e.parseMode !== 'none')?.parseMode ||
+    primaryStartEvent?.parseMode ||
+    'none';
+  const startReplySettings = startEvents.find((e) => e.replyKeyboardSettings)?.replyKeyboardSettings;
+
   const blueprint: Partial<BotConfig> = {
     name: botName,
-    startMessage: startEvent
+    startMessage: startEvents.length > 0
       ? {
-          text: startEvent.text,
-          isSaved: Boolean(startEvent.text.trim()) || (startEvent.media?.length || 0) > 0,
-          parseMode: startEvent.parseMode || 'none',
-          media: startEvent.media || [],
+          text: combinedStartText,
+          isSaved: Boolean(combinedStartText.trim()) || combinedStartMedia.length > 0,
+          parseMode: startParseMode,
+          media: combinedStartMedia,
         }
       : {
           text: `مرحباً بك في ${botName}!`,
@@ -600,11 +833,11 @@ export function buildBlueprintFromCapturedBot(
         }
       : {}),
     settings: {
-      resizeKeyboard: startEvent?.replyKeyboardSettings?.resizeKeyboard ?? true,
-      oneTimeKeyboard: startEvent?.replyKeyboardSettings?.oneTimeKeyboard ?? false,
-      isPersistent: startEvent?.replyKeyboardSettings?.isPersistent ?? false,
-      ...(startEvent?.replyKeyboardSettings?.inputFieldPlaceholder
-        ? { inputFieldPlaceholder: startEvent.replyKeyboardSettings.inputFieldPlaceholder }
+      resizeKeyboard: startReplySettings?.resizeKeyboard ?? true,
+      oneTimeKeyboard: startReplySettings?.oneTimeKeyboard ?? false,
+      isPersistent: startReplySettings?.isPersistent ?? false,
+      ...(startReplySettings?.inputFieldPlaceholder
+        ? { inputFieldPlaceholder: startReplySettings.inputFieldPlaceholder }
         : {}),
       simulatorTheme: 'dark',
     },
@@ -618,6 +851,229 @@ export function buildBlueprintFromCapturedBot(
     json,
     resolvedEvents,
   };
+}
+
+/**
+ * Computes the interactive click path from `/start` (or slash command) down to `targetButtonId`
+ * so the scanner backend can automatically replay edited-in-place Telegram menus if needed.
+ */
+export function buildButtonNavigationPath(
+  record: CapturedBotRecord,
+  targetButtonId: string
+): ScanNavStep[] {
+  const rebuilt = record.blueprint ? record : { ...record, ...buildBlueprintFromCapturedBot(record) };
+  const bp = rebuilt.blueprint;
+  if (!bp) return [];
+
+  const rootInline = bp.inlineButtons || [];
+  const rootReply = bp.replyButtons || [];
+  const flows = bp.buttonFlows || {};
+
+  const toStep = (btn: BotButton): ScanNavStep | null => {
+    if (btn.type === 'reply') {
+      return { type: 'reply', buttonId: btn.id, text: btn.text };
+    }
+    if (btn.callbackData) {
+      return {
+        type: 'inline',
+        buttonId: btn.id,
+        callbackData: btn.callbackData,
+        text: btn.text,
+      };
+    }
+    return null;
+  };
+
+  // BFS from root (/start) + slash command entrypoints to reach targetButtonId
+  type QueueItem = { menuId: string; path: ScanNavStep[] };
+  const queue: QueueItem[] = [{ menuId: 'main', path: [{ type: 'command', text: '/start' }] }];
+  const visitedMenus = new Set<string>(['main']);
+
+  for (const cmd of bp.commands || []) {
+    if (cmd.targetFlowId && flows[cmd.targetFlowId]) {
+      queue.push({
+        menuId: cmd.targetFlowId,
+        path: [{ type: 'command', text: `/${cmd.command}` }],
+      });
+      visitedMenus.add(cmd.targetFlowId);
+    }
+  }
+
+  while (queue.length > 0) {
+    const current = queue.shift()!;
+    const buttons =
+      current.menuId === 'main'
+        ? [...rootInline, ...rootReply]
+        : flows[current.menuId]?.subButtons || [];
+
+    for (const btn of buttons) {
+      const step = toStep(btn);
+      if (btn.id === targetButtonId) {
+        return step ? [...current.path, step] : current.path;
+      }
+      if (step && flows[btn.id] && !visitedMenus.has(btn.id)) {
+        visitedMenus.add(btn.id);
+        queue.push({
+          menuId: btn.id,
+          path: [...current.path, step],
+        });
+      }
+    }
+  }
+
+  return [];
+}
+
+export interface CrawlCandidate {
+  kind: 'command' | 'button';
+  label: string;
+  depth: number;
+  dedupKey: string;
+  commandText?: string;
+  button?: BotButton;
+}
+
+const LOOP_NAV_TEXTS = new Set<string>([
+  'رجوع',
+  'عودة',
+  'للخلف',
+  'السابق',
+  'التالي',
+  'القائمة السابقة',
+  'العودة للقائمة',
+  'العودة للقائمة السابقة',
+  'العودة للرئيسية',
+  'القائمة الرئيسية',
+  'الرئيسية',
+  'back',
+  'go back',
+  'return',
+  'previous',
+  'prev',
+  'next',
+  'main menu',
+  'home',
+  'close',
+  'إغلاق',
+]);
+
+export function isLikelyLoopOrPaginationButton(btn: BotButton): boolean {
+  const cb = (btn.callbackData || '').trim().toLowerCase();
+  if (
+    cb.startsWith('nav:') ||
+    cb.startsWith('pg:') ||
+    cb === 'back' ||
+    cb === 'home' ||
+    cb === 'main_menu' ||
+    cb === 'close'
+  ) {
+    return true;
+  }
+  const norm = normalizeLabel(btn.text);
+  if (LOOP_NAV_TEXTS.has(norm)) return true;
+  if (/^(صفحة|page)\s*\d+\s*(\/|من|of)\s*\d+$/i.test(norm)) return true;
+  if (/^[<>«»]{1,2}$/.test(btn.text.trim())) return true;
+  return false;
+}
+
+/**
+ * Discovers all reachable unexplored commands and interactive buttons across a captured bot tree in BFS depth order.
+ */
+export function collectBotCrawlCandidates(
+  record: CapturedBotRecord,
+  visitedKeys: Set<string>,
+  options?: { maxDepth?: number; includeAlreadyCapturedFlows?: boolean }
+): CrawlCandidate[] {
+  const maxDepth = options?.maxDepth ?? 4;
+  const includeAlreadyCaptured = Boolean(options?.includeAlreadyCapturedFlows);
+  const rebuilt = record.blueprint
+    ? record
+    : { ...record, ...buildBlueprintFromCapturedBot(record) };
+  const bp = rebuilt.blueprint;
+  if (!bp) return [];
+
+  const rootInline = bp.inlineButtons || [];
+  const rootReply = bp.replyButtons || [];
+  const flows = bp.buttonFlows || {};
+  const candidates: CrawlCandidate[] = [];
+  const queuedKeys = new Set<string>();
+
+  for (const cmd of record.commands || []) {
+    const cleanCmd = (cmd.command || '').replace(/^\//, '').trim().toLowerCase();
+    if (!cleanCmd || cleanCmd === 'start') continue;
+    const dedupKey = `cmd:${cleanCmd}`;
+    const flowId = `scan_cmd_${cleanCmd}`;
+    if (
+      !visitedKeys.has(dedupKey) &&
+      !queuedKeys.has(dedupKey) &&
+      (includeAlreadyCaptured || !flows[flowId])
+    ) {
+      queuedKeys.add(dedupKey);
+      candidates.push({
+        kind: 'command',
+        label: `/${cleanCmd}`,
+        depth: 1,
+        dedupKey,
+        commandText: `/${cleanCmd}`,
+      });
+    }
+  }
+
+  type QueueNode = { menuId: string; depth: number };
+  const queue: QueueNode[] = [{ menuId: 'main', depth: 1 }];
+  const visitedMenus = new Set<string>(['main']);
+
+  for (const cmd of bp.commands || []) {
+    if (cmd.targetFlowId && flows[cmd.targetFlowId] && !visitedMenus.has(cmd.targetFlowId)) {
+      visitedMenus.add(cmd.targetFlowId);
+      queue.push({ menuId: cmd.targetFlowId, depth: 2 });
+    }
+  }
+
+  while (queue.length > 0) {
+    const { menuId, depth } = queue.shift()!;
+    if (depth > maxDepth) continue;
+
+    const buttons =
+      menuId === 'main'
+        ? [...rootInline, ...rootReply]
+        : flows[menuId]?.subButtons || [];
+
+    for (const btn of buttons) {
+      if (btn.actionType !== 'flow') continue;
+      if (btn.type === 'inline' && !btn.callbackData) continue;
+      if (isLikelyLoopOrPaginationButton(btn)) continue;
+
+      const dedupKey =
+        btn.type === 'inline'
+          ? `inline:${btn.callbackData}`
+          : `reply:${normalizeLabel(btn.text) || btn.text.trim()}`;
+
+      const hasCapturedFlow = Boolean(flows[btn.id]);
+      if (
+        !visitedKeys.has(dedupKey) &&
+        !queuedKeys.has(dedupKey) &&
+        (includeAlreadyCaptured || !hasCapturedFlow)
+      ) {
+        queuedKeys.add(dedupKey);
+        candidates.push({
+          kind: 'button',
+          label: btn.text,
+          depth,
+          dedupKey,
+          button: btn,
+        });
+      }
+
+      if (hasCapturedFlow && depth + 1 <= maxDepth && !visitedMenus.has(btn.id)) {
+        visitedMenus.add(btn.id);
+        queue.push({ menuId: btn.id, depth: depth + 1 });
+      }
+    }
+  }
+
+  candidates.sort((a, b) => a.depth - b.depth);
+  return candidates;
 }
 
 function buildEventFlowActions(ev: CapturedMessageEvent): FlowAction[] {

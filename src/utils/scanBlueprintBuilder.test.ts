@@ -2,6 +2,9 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import {
   buildBlueprintFromCapturedBot,
+  buildButtonNavigationPath,
+  collectBotCrawlCandidates,
+  isLikelyLoopOrPaginationButton,
   makeDeterministicCapturedButtonId,
   telegramEntitiesToHtml,
 } from './scanBlueprintBuilder';
@@ -314,3 +317,213 @@ test('manualParentOverrides re-links an unassigned passive edit to a specific bu
   assert.equal(resolvedPassive?.assignedTo, 'button');
   assert.equal(resolvedPassive?.assignedButtonId, btnId);
 });
+
+test('merges multi-message /start and multi-message submenu buttons, registers unassigned menus, and computes navigation paths', async () => {
+  const { buildButtonNavigationPath } = await import('./scanBlueprintBuilder');
+  const btnCatId = makeDeterministicCapturedButtonId('root', 'inline', 0, 0, '📂 الأقسام', 'cats');
+  const btnSub1Id = makeDeterministicCapturedButtonId('cats_scope', 'inline', 0, 0, '📱 جوالات', 'phones');
+  const btnSub2Id = makeDeterministicCapturedButtonId('cats_scope', 'inline', 0, 1, '💻 لابتوب', 'laptops');
+  const btnSubReplyId = makeDeterministicCapturedButtonId('cats_scope', 'reply', 0, 0, '📞 دعم القسم');
+
+  const record: CapturedBotRecord = {
+    botKey: 'multi_menu_bot',
+    botTelegramId: '777888',
+    displayName: 'بوت القوائم المتعددة',
+    commands: [],
+    manualParentOverrides: {},
+    lastInteractionAt: '2026-01-01T00:00:05.000Z',
+    events: [
+      {
+        id: 'ev_s1',
+        botKey: 'multi_menu_bot',
+        telegramMessageId: 10,
+        timestamp: '2026-01-01T00:00:01.000Z',
+        kind: 'start_response',
+        isEdited: false,
+        triggerType: 'command',
+        triggerText: '/start',
+        text: 'أهلاً بك!',
+        parseMode: 'none',
+        media: [],
+        inlineButtons: [],
+        replyButtons: [
+          { id: 'r_home', text: '🏠 الرئيسية', type: 'reply', row: 0, order: 0, actionType: 'flow' },
+        ],
+      },
+      {
+        id: 'ev_s2',
+        botKey: 'multi_menu_bot',
+        telegramMessageId: 11,
+        timestamp: '2026-01-01T00:00:02.000Z',
+        kind: 'start_response',
+        isEdited: false,
+        triggerType: 'command',
+        triggerText: '/start',
+        text: 'اختر من القائمة:',
+        parseMode: 'none',
+        media: [],
+        inlineButtons: [
+          { id: btnCatId, text: '📂 الأقسام', type: 'inline', row: 0, order: 0, actionType: 'flow', callbackData: 'cats' },
+        ],
+        replyButtons: [],
+      },
+      // Button click emits 2 messages in quick succession: one with Inline sub-buttons, one with Reply sub-button
+      {
+        id: 'ev_c1',
+        botKey: 'multi_menu_bot',
+        telegramMessageId: 11,
+        sourceMessageId: 11,
+        timestamp: '2026-01-01T00:00:04.000Z',
+        kind: 'edit_message',
+        isEdited: true,
+        triggerType: 'inline_button',
+        triggerCallbackData: 'cats',
+        parentButtonId: btnCatId,
+        text: 'قائمة الأقسام:',
+        parseMode: 'none',
+        media: [],
+        inlineButtons: [
+          { id: btnSub1Id, text: '📱 جوالات', type: 'inline', row: 0, order: 0, actionType: 'flow', callbackData: 'phones' },
+          { id: btnSub2Id, text: '💻 لابتوب', type: 'inline', row: 0, order: 1, actionType: 'flow', callbackData: 'laptops' },
+        ],
+        replyButtons: [],
+      },
+      {
+        id: 'ev_c2',
+        botKey: 'multi_menu_bot',
+        telegramMessageId: 12,
+        timestamp: '2026-01-01T00:00:05.000Z',
+        kind: 'new_message',
+        isEdited: false,
+        triggerType: 'inline_button',
+        triggerCallbackData: 'cats',
+        parentButtonId: btnCatId,
+        text: 'تواصل مع القسم:',
+        parseMode: 'none',
+        media: [],
+        inlineButtons: [],
+        replyButtons: [
+          { id: btnSubReplyId, text: '📞 دعم القسم', type: 'reply', row: 0, order: 0, actionType: 'flow' },
+        ],
+      },
+    ],
+  };
+
+  const built = buildBlueprintFromCapturedBot(record);
+  assert.equal(built.blueprint.inlineButtons?.length, 1);
+  assert.equal(built.blueprint.replyButtons?.length, 1);
+
+  const catFlow = built.blueprint.buttonFlows?.[btnCatId];
+  assert.ok(catFlow);
+  // Must preserve BOTH inline sub-buttons AND reply sub-button from the burst!
+  assert.equal(catFlow.subButtons.length, 3);
+  assert.ok(catFlow.subButtons.some((b) => b.id === btnSub1Id));
+  assert.ok(catFlow.subButtons.some((b) => b.id === btnSub2Id));
+  assert.ok(catFlow.subButtons.some((b) => b.id === btnSubReplyId));
+
+  // Verify BFS path reconstruction reaches level-2 inline button cleanly
+  const path = buildButtonNavigationPath({ ...record, blueprint: built.blueprint }, btnSub2Id);
+  assert.deepEqual(path, [
+    { type: 'command', text: '/start' },
+    { type: 'inline', buttonId: btnCatId, callbackData: 'cats', text: '📂 الأقسام' },
+    { type: 'inline', buttonId: btnSub2Id, callbackData: 'laptops', text: '💻 لابتوب' },
+  ]);
+});
+
+test('collectBotCrawlCandidates discovers unexplored commands and multi-level buttons in BFS order while filtering back loops', () => {
+  const btnExplore = makeDeterministicCapturedButtonId('root', 'inline', 0, 0, '📂 الأقسام', 'cats');
+  const btnUnexplored = makeDeterministicCapturedButtonId('root', 'inline', 0, 1, '💰 الأسعار', 'prices');
+  const btnBack = makeDeterministicCapturedButtonId('root', 'inline', 1, 0, '🔙 رجوع', 'back');
+  const btnReply = makeDeterministicCapturedButtonId('root', 'reply', 0, 0, '📞 تواصل معنا');
+  const btnGrandchild = makeDeterministicCapturedButtonId(btnExplore, 'inline', 0, 0, '📱 جوالات', 'phones');
+
+  assert.equal(
+    isLikelyLoopOrPaginationButton({
+      id: btnBack,
+      text: '🔙 رجوع',
+      type: 'inline',
+      actionType: 'flow',
+      callbackData: 'back',
+      parentId: null,
+      row: 1,
+      order: 0,
+    }),
+    true
+  );
+
+  const record: CapturedBotRecord = {
+    botKey: 'crawl_test_bot',
+    botTelegramId: '777',
+    displayName: 'بوت الاختبار',
+    commands: [
+      { command: 'start', description: 'البداية' },
+      { command: 'help', description: 'المساعدة' },
+    ],
+    manualParentOverrides: {},
+    lastInteractionAt: '2026-01-01T00:00:05.000Z',
+    events: [
+      {
+        id: 'ev_1',
+        botKey: 'crawl_test_bot',
+        telegramMessageId: 50,
+        timestamp: '2026-01-01T00:00:01.000Z',
+        kind: 'start_response',
+        isEdited: false,
+        triggerType: 'command',
+        triggerText: '/start',
+        text: 'القائمة الرئيسية',
+        parseMode: 'none',
+        media: [],
+        inlineButtons: [
+          { id: btnExplore, text: '📂 الأقسام', type: 'inline', row: 0, order: 0, actionType: 'flow', callbackData: 'cats' },
+          { id: btnUnexplored, text: '💰 الأسعار', type: 'inline', row: 0, order: 1, actionType: 'flow', callbackData: 'prices' },
+          { id: btnBack, text: '🔙 رجوع', type: 'inline', row: 1, order: 0, actionType: 'flow', callbackData: 'back' },
+        ],
+        replyButtons: [
+          { id: btnReply, text: '📞 تواصل معنا', type: 'reply', row: 0, order: 0, actionType: 'flow' },
+        ],
+      },
+      {
+        id: 'ev_2',
+        botKey: 'crawl_test_bot',
+        telegramMessageId: 50,
+        sourceMessageId: 50,
+        timestamp: '2026-01-01T00:00:02.000Z',
+        kind: 'edit_message',
+        isEdited: true,
+        triggerType: 'inline_button',
+        triggerCallbackData: 'cats',
+        parentButtonId: btnExplore,
+        text: 'اختر القسم:',
+        parseMode: 'none',
+        media: [],
+        inlineButtons: [
+          { id: btnGrandchild, text: '📱 جوالات', type: 'inline', row: 0, order: 0, actionType: 'flow', callbackData: 'phones' },
+          { id: `${btnExplore}_back`, text: '🏠 القائمة الرئيسية', type: 'inline', row: 1, order: 0, actionType: 'flow', callbackData: 'nav:main' },
+        ],
+        replyButtons: [],
+      },
+    ],
+  };
+
+  const candidates = collectBotCrawlCandidates(record, new Set(), { maxDepth: 4 });
+  const labels = candidates.map((c) => c.label);
+
+  // /help (depth 1), الأسعار (depth 1), تواصل معنا (depth 1), and جوالات (depth 2) must all be queued
+  // while الأقسام (already captured) and رجوع / القائمة الرئيسية (navigation loops) are filtered out!
+  assert.deepEqual(labels, ['/help', '💰 الأسعار', '📞 تواصل معنا', '📱 جوالات']);
+  assert.equal(candidates[candidates.length - 1].depth, 2);
+
+  // Visited keys prevent re-queuing
+  const afterVisited = collectBotCrawlCandidates(
+    record,
+    new Set(['cmd:help', 'inline:prices']),
+    { maxDepth: 4 }
+  );
+  assert.deepEqual(
+    afterVisited.map((c) => c.label),
+    ['📞 تواصل معنا', '📱 جوالات']
+  );
+});
+
+

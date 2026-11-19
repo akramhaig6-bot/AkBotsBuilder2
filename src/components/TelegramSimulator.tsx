@@ -1,4 +1,4 @@
-import React, { useState, useEffect } from 'react';
+import React, { useState, useEffect, useRef } from 'react';
 import {
   RotateCcw,
   Sun,
@@ -68,6 +68,10 @@ interface TelegramSimulatorProps {
   bot: BotConfig;
   onSelectButtonToEdit?: (button: BotButton) => void;
   onUpdateBot?: (updates: Partial<BotConfig>) => Promise<void>;
+  scanMode?: boolean;
+  isScanning?: boolean;
+  onScanTriggerButton?: (button: BotButton) => Promise<boolean | void>;
+  onScanSendText?: (text: string) => Promise<boolean | void>;
 }
 
 interface ChatMessage {
@@ -117,6 +121,10 @@ export const TelegramSimulator: React.FC<TelegramSimulatorProps> = ({
   bot,
   onSelectButtonToEdit,
   onUpdateBot,
+  scanMode = false,
+  isScanning = false,
+  onScanTriggerButton,
+  onScanSendText,
 }) => {
   const [theme, setTheme] = useState<'dark' | 'light'>(
     bot.settings?.simulatorTheme || 'dark'
@@ -132,8 +140,22 @@ export const TelegramSimulator: React.FC<TelegramSimulatorProps> = ({
   const [showSlashMenu, setShowSlashMenu] = useState(false);
 
   // Modes: 'preview' (live Telegram behavior) vs 'design' (click opens quick editor)
-  const [simulatorMode, setSimulatorMode] = useState<'preview' | 'design'>('design');
+  const [simulatorMode, setSimulatorMode] = useState<'preview' | 'design'>(
+    scanMode ? 'preview' : 'design'
+  );
   const [isReorderMode, setIsReorderMode] = useState(false);
+
+  const prevBotIdRef = useRef<string>(bot.id);
+  const pendingScanNavRef = useRef<{
+    type: 'button';
+    button: BotButton;
+    sourceMsgId?: string;
+    latestBotRef: BotConfig;
+  } | {
+    type: 'command';
+    text: string;
+    latestBotRef: BotConfig;
+  } | null>(null);
 
   // Selected button for in-simulator quick editing
   const [selectedButton, setSelectedButton] = useState<BotButton | null>(null);
@@ -205,8 +227,37 @@ export const TelegramSimulator: React.FC<TelegramSimulatorProps> = ({
     setMessages(initialMessages);
   };
 
-  // Automatically sync /start message when bot config changes
+  // Automatically sync /start message when bot config changes & consume pending live scan navigation
   useEffect(() => {
+    const botIdChanged = prevBotIdRef.current !== bot.id;
+    if (botIdChanged) {
+      prevBotIdRef.current = bot.id;
+      pendingScanNavRef.current = null;
+      resetToStart();
+      return;
+    }
+
+    if (pendingScanNavRef.current && pendingScanNavRef.current.latestBotRef !== bot) {
+      const pending = pendingScanNavRef.current;
+      pendingScanNavRef.current = null;
+      if (pending.type === 'button') {
+        const refreshedBtn = findButtonById(bot, pending.button.id)?.button || pending.button;
+        executePreviewMenu(refreshedBtn.id, 0, pending.sourceMsgId, refreshedBtn);
+        return;
+      }
+      if (pending.type === 'command') {
+        if (pending.text === '/start') {
+          resetToStart();
+          return;
+        }
+        const slashRes = resolveSlashCommand(bot, pending.text);
+        if (slashRes.matched) {
+          executePreviewMenu(slashRes.targetMenuId, 0);
+          return;
+        }
+      }
+    }
+
     const startView = resolveMenuView(bot, 'main', 0);
     const hasContent =
       startView.hasExplicitText ||
@@ -216,7 +267,7 @@ export const TelegramSimulator: React.FC<TelegramSimulatorProps> = ({
     if (messages.length === 0 && hasContent) {
       resetToStart();
     }
-  }, [bot.id, bot.startMessage, bot.inlineButtons, bot.inlinePagination]);
+  }, [bot, bot.id, bot.startMessage, bot.inlineButtons, bot.inlinePagination]);
 
   const nowTime = () =>
     new Date().toLocaleTimeString('ar-EG', {
@@ -580,6 +631,23 @@ export const TelegramSimulator: React.FC<TelegramSimulatorProps> = ({
       ]);
     }
 
+    if (scanMode && simulatorMode === 'preview' && onScanTriggerButton) {
+      if (isScanning) return;
+      const snapshotBot = bot;
+      pendingScanNavRef.current = {
+        type: 'button',
+        button,
+        sourceMsgId,
+        latestBotRef: snapshotBot,
+      };
+      void onScanTriggerButton(button).then((ok) => {
+        if (ok === false && pendingScanNavRef.current?.type === 'button') {
+          pendingScanNavRef.current = null;
+        }
+      });
+      return;
+    }
+
     executePreviewMenu(button.id, 0, sourceMsgId, button);
   };
 
@@ -710,7 +778,24 @@ export const TelegramSimulator: React.FC<TelegramSimulatorProps> = ({
       return;
     }
 
-    const found = findButtonById(bot, callbackData);
+    let found = findButtonById(bot, item.id || callbackData);
+    if (!found && callbackData) {
+      found = findButtonById(bot, callbackData);
+    }
+    if (!found && callbackData) {
+      const matchByCallback = (btns?: BotButton[]): BotButton | undefined =>
+        btns?.find((b) => b.callbackData === callbackData || b.id === callbackData);
+      let matchedBtn = matchByCallback(bot.inlineButtons);
+      if (!matchedBtn && bot.buttonFlows) {
+        for (const flow of Object.values(bot.buttonFlows)) {
+          matchedBtn = matchByCallback(flow.subButtons);
+          if (matchedBtn) break;
+        }
+      }
+      if (matchedBtn) {
+        found = { button: matchedBtn };
+      }
+    }
     if (found?.button) {
       handleButtonClick(found.button, msgId);
     }
@@ -812,6 +897,34 @@ export const TelegramSimulator: React.FC<TelegramSimulatorProps> = ({
 
     setShowSlashMenu(false);
     setForceReplyPlaceholder(null);
+
+    if (scanMode && simulatorMode === 'preview' && onScanSendText) {
+      if (isScanning) return;
+      if (trimmed !== '/start') {
+        setMessages((prev) => [
+          ...prev,
+          {
+            id: `msg_user_cmd_${Date.now()}`,
+            sender: 'user',
+            text: trimmed,
+            timestamp: nowTime(),
+          },
+        ]);
+      }
+      const snapshotBot = bot;
+      pendingScanNavRef.current = {
+        type: 'command',
+        text: trimmed,
+        latestBotRef: snapshotBot,
+      };
+      setSimulatedInput('');
+      void onScanSendText(trimmed).then((ok) => {
+        if (ok === false && pendingScanNavRef.current?.type === 'command') {
+          pendingScanNavRef.current = null;
+        }
+      });
+      return;
+    }
 
     if (trimmed === '/start') {
       resetToStart();
@@ -1076,54 +1189,61 @@ export const TelegramSimulator: React.FC<TelegramSimulatorProps> = ({
 
         {/* Mode & Action Switcher Strip */}
         <div className="flex items-center justify-between gap-2 pt-1 border-t border-sky-200/60 dark:border-slate-800/50 flex-wrap">
-          <div className="flex items-center gap-1 bg-[#F5F9FD] dark:bg-slate-950 p-0.5 rounded-lg border border-sky-200 dark:border-slate-800">
-            <button
-              type="button"
-              onClick={() => {
-                setSimulatorMode('design');
-                setIsReorderMode(false);
-              }}
-              className={`flex items-center gap-1 px-2 py-1 text-[11px] font-semibold rounded-md transition-all cursor-pointer ${
-                simulatorMode === 'design' && !isReorderMode
-                  ? 'bg-sky-600 text-white shadow-xs'
-                  : 'text-slate-600 dark:text-slate-400 hover:text-slate-900 dark:hover:text-white'
-              }`}
-            >
-              <Workflow className="w-3 h-3" />
-              <span>تحرير الزر والتدفق</span>
-            </button>
-            <button
-              type="button"
-              onClick={() => {
-                setSimulatorMode('design');
-                setIsReorderMode(true);
-              }}
-              className={`flex items-center gap-1 px-2 py-1 text-[11px] font-semibold rounded-md transition-all cursor-pointer ${
-                isReorderMode
-                  ? 'bg-amber-600 text-white shadow-xs'
-                  : 'text-slate-600 dark:text-slate-400 hover:text-slate-900 dark:hover:text-white'
-              }`}
-            >
-              <Move className="w-3 h-3" />
-              <span>سحب وترتيب</span>
-            </button>
-            <button
-              type="button"
-              onClick={() => {
-                setSimulatorMode('preview');
-                setIsReorderMode(false);
-                setSelectedButton(null);
-              }}
-              className={`flex items-center gap-1 px-2 py-1 text-[11px] font-semibold rounded-md transition-all cursor-pointer ${
-                simulatorMode === 'preview'
-                  ? 'bg-emerald-600 text-white shadow-xs'
-                  : 'text-slate-600 dark:text-slate-400 hover:text-slate-900 dark:hover:text-white'
-              }`}
-            >
-              <LayoutGrid className="w-3 h-3" />
-              <span>معاينة المستخدم</span>
-            </button>
-          </div>
+          {scanMode ? (
+            <div className="flex items-center gap-1.5 text-[11px] font-semibold text-emerald-700 dark:text-emerald-300">
+              <LayoutGrid className="w-3.5 h-3.5" />
+              <span>وضع مسح القوائم التفاعلي</span>
+            </div>
+          ) : (
+            <div className="flex items-center gap-1 bg-[#F5F9FD] dark:bg-slate-950 p-0.5 rounded-lg border border-sky-200 dark:border-slate-800">
+              <button
+                type="button"
+                onClick={() => {
+                  setSimulatorMode('design');
+                  setIsReorderMode(false);
+                }}
+                className={`flex items-center gap-1 px-2 py-1 text-[11px] font-semibold rounded-md transition-all cursor-pointer ${
+                  simulatorMode === 'design' && !isReorderMode
+                    ? 'bg-sky-600 text-white shadow-xs'
+                    : 'text-slate-600 dark:text-slate-400 hover:text-slate-900 dark:hover:text-white'
+                }`}
+              >
+                <Workflow className="w-3 h-3" />
+                <span>تحرير الزر والتدفق</span>
+              </button>
+              <button
+                type="button"
+                onClick={() => {
+                  setSimulatorMode('design');
+                  setIsReorderMode(true);
+                }}
+                className={`flex items-center gap-1 px-2 py-1 text-[11px] font-semibold rounded-md transition-all cursor-pointer ${
+                  isReorderMode
+                    ? 'bg-amber-600 text-white shadow-xs'
+                    : 'text-slate-600 dark:text-slate-400 hover:text-slate-900 dark:hover:text-white'
+                }`}
+              >
+                <Move className="w-3 h-3" />
+                <span>سحب وترتيب</span>
+              </button>
+              <button
+                type="button"
+                onClick={() => {
+                  setSimulatorMode('preview');
+                  setIsReorderMode(false);
+                  setSelectedButton(null);
+                }}
+                className={`flex items-center gap-1 px-2 py-1 text-[11px] font-semibold rounded-md transition-all cursor-pointer ${
+                  simulatorMode === 'preview'
+                    ? 'bg-emerald-600 text-white shadow-xs'
+                    : 'text-slate-600 dark:text-slate-400 hover:text-slate-900 dark:hover:text-white'
+                }`}
+              >
+                <LayoutGrid className="w-3 h-3" />
+                <span>معاينة المستخدم</span>
+              </button>
+            </div>
+          )}
 
           <div className="flex items-center gap-1.5 flex-wrap">
             <button
@@ -1277,6 +1397,11 @@ export const TelegramSimulator: React.FC<TelegramSimulatorProps> = ({
         {actionToast && (
           <div className="px-3 py-1.5 bg-sky-600/90 text-white text-[11px] text-center font-medium shrink-0">
             {actionToast}
+          </div>
+        )}
+        {isScanning && (
+          <div className="px-3 py-1.5 bg-emerald-600/95 text-white text-[11px] text-center font-semibold shrink-0 animate-pulse">
+            جاري التفاعل مع البوت والتقاط جميع أزرار القائمة...
           </div>
         )}
 

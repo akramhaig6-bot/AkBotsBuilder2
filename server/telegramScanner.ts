@@ -14,10 +14,13 @@ import type {
   SavedScanAccountSummary,
   ScanAccountInfo,
   ScanConnectionState,
+  ScanCrawlProgress,
   ScanStatusResponse,
 } from '../src/types/scan';
 import {
   buildBlueprintFromCapturedBot,
+  buildButtonNavigationPath,
+  collectBotCrawlCandidates,
   makeDeterministicCapturedButtonId,
   RawTelegramEntity,
   telegramEntitiesToHtml,
@@ -84,12 +87,15 @@ export class TelegramScannerService {
   private fetchedBotInfoKeys = new Set<string>();
   private seenMessageFingerprints = new Set<string>();
   private seenOutSignatures = new Map<string, number>();
+  private suppressCaptureBots = new Set<string>();
 
   // Track baseline message IDs / editDates upon connecting so live watcher captures new & edited bot activity from Telegram app seamlessly
   private connectedAtUnix: number = 0;
   private knownDialogTopMarkers = new Map<string, { msgId: number; editDate: number }>();
   private dialogSyncTimer: ReturnType<typeof setInterval> | null = null;
   private isSyncingDialogs: boolean = false;
+  private activeCrawl: ScanCrawlProgress | null = null;
+  private crawlAbortRequested: boolean = false;
 
   constructor(dataDir: string, uploadsDir: string) {
     this.dataDir = dataDir;
@@ -376,6 +382,7 @@ export class TelegramScannerService {
       activeTargetBot: this.activeTargetBot,
       error: this.lastError,
       capturedBotCount: Object.keys(this.captures).length,
+      crawlProgress: this.activeCrawl ? { ...this.activeCrawl } : null,
     };
   }
 
@@ -788,6 +795,14 @@ export class TelegramScannerService {
     clearSaved: boolean = false,
     updateAutoConnectPref: boolean = true
   ): Promise<ScanStatusResponse> {
+    this.crawlAbortRequested = true;
+    if (this.activeCrawl?.state === 'running') {
+      this.activeCrawl = {
+        ...this.activeCrawl,
+        state: 'stopped',
+        finishedAt: new Date().toISOString(),
+      };
+    }
     this.stopDialogWatcher();
 
     if (this.pendingAuth?.client) {
@@ -1274,6 +1289,9 @@ export class TelegramScannerService {
     isEdited: boolean
   ): Promise<CapturedMessageEvent | null> {
     const botKey = this.getBotKeyFromUser(botUser);
+    if (this.suppressCaptureBots.has(botKey)) {
+      return null;
+    }
     const record = this.ensureBotRecord(botUser);
     void this.ensureBotProfileAndCommands(botUser, botKey);
 
@@ -1303,7 +1321,13 @@ export class TelegramScannerService {
       ? triggerFresh.parentButtonId
       : isStartCmd
       ? 'root'
-      : `msg_${message.id}`;
+      : triggerFresh?.text
+      ? `trig_${message.id}_${triggerFresh.text.slice(0, 24)}`
+      : `msg_${message.id}_${
+          isEdited
+            ? message.editDate || message.date || Date.now()
+            : message.date || Date.now()
+        }_${(message.message || '').trim().slice(0, 18)}`;
 
     const { inlineButtons, replyButtons, replyKeyboardSettings } = this.extractButtons(
       message,
@@ -1367,6 +1391,137 @@ export class TelegramScannerService {
     return capturedEvent;
   }
 
+  private extractCallbackMatchFromMessages(
+    messages: Api.Message[],
+    callbackData: string
+  ): { messageId: number; dataBuffer: Buffer } | null {
+    for (const msg of messages) {
+      if (!msg || !(msg.replyMarkup instanceof Api.ReplyInlineMarkup)) continue;
+      for (const row of msg.replyMarkup.rows || []) {
+        for (const btn of row.buttons || []) {
+          if (btn instanceof Api.KeyboardButtonCallback && btn.data) {
+            const rawBuf = Buffer.from(btn.data);
+            const utf = rawBuf.toString('utf-8');
+            const b64 = rawBuf.toString('base64');
+            if (
+              utf.slice(0, 64) === callbackData ||
+              b64.slice(0, 64) === callbackData
+            ) {
+              return { messageId: msg.id, dataBuffer: rawBuf };
+            }
+          }
+        }
+      }
+    }
+    return null;
+  }
+
+  private async findLiveMessageWithCallback(
+    entity: Api.User,
+    callbackData: string,
+    preferredMsgId?: number
+  ): Promise<{ messageId: number; dataBuffer: Buffer } | null> {
+    if (!this.client) return null;
+    if (preferredMsgId) {
+      try {
+        const preferredMsgs = await this.client.getMessages(entity, { ids: [preferredMsgId] });
+        const hit = this.extractCallbackMatchFromMessages(preferredMsgs, callbackData);
+        if (hit) return hit;
+      } catch {
+        // ignore and scan recent
+      }
+    }
+    try {
+      const recentMsgs = await this.client.getMessages(entity, { limit: 8 });
+      return this.extractCallbackMatchFromMessages(recentMsgs, callbackData);
+    } catch {
+      return null;
+    }
+  }
+
+  private async replayPathToFindButton(
+    entity: Api.User,
+    botKey: string,
+    record: CapturedBotRecord,
+    targetButtonId: string,
+    targetCallbackData: string
+  ): Promise<{ messageId: number; dataBuffer: Buffer } | null> {
+    if (!this.client) return null;
+    const fullPath = buildButtonNavigationPath(record, targetButtonId);
+    if (fullPath.length === 0) return null;
+
+    // Steps before the target button itself
+    const ancestorSteps = fullPath.slice(0, -1);
+    if (ancestorSteps.length === 0) return null;
+
+    this.suppressCaptureBots.add(botKey);
+    try {
+      for (const step of ancestorSteps) {
+        if (step.type === 'command' || step.type === 'reply') {
+          await this.client.sendMessage(entity, { message: step.text });
+          await new Promise((r) => setTimeout(r, 900));
+        } else if (step.type === 'inline') {
+          const found = await this.findLiveMessageWithCallback(entity, step.callbackData);
+          if (!found) break;
+          try {
+            await this.client.invoke(
+              new Api.messages.GetBotCallbackAnswer({
+                peer: entity,
+                msgId: found.messageId,
+                data: found.dataBuffer,
+              })
+            );
+          } catch {
+            break;
+          }
+          await new Promise((r) => setTimeout(r, 850));
+        }
+      }
+
+      return await this.findLiveMessageWithCallback(entity, targetCallbackData);
+    } finally {
+      this.suppressCaptureBots.delete(botKey);
+    }
+  }
+
+  private async waitAndPullBurstResponses(
+    entity: Api.User,
+    trigger: PendingTrigger,
+    startedUnix: number,
+    preferredMsgId?: number
+  ) {
+    if (!this.client) return;
+    // Wait up to 1800ms for real-time MTProto updates, then brief 350ms settle for multi-message bursts
+    for (let i = 0; i < 8; i++) {
+      await new Promise((r) => setTimeout(r, 220));
+      if (trigger.handledMessageEvent) {
+        await new Promise((r) => setTimeout(r, 350));
+        break;
+      }
+    }
+
+    // Active pull fallback so no new or edited message from a bot is ever missed due to update lag
+    try {
+      const recent = await this.client.getMessages(entity, { limit: 6 });
+      const ordered = [...recent].reverse();
+      for (const m of ordered) {
+        if (!m || m.out) continue;
+        const mDate = Number(m.date || 0);
+        const mEdit = Number(m.editDate || 0);
+        const isFresh =
+          mDate >= startedUnix - 1 ||
+          mEdit >= startedUnix - 1 ||
+          (preferredMsgId && m.id === preferredMsgId && mEdit > 0);
+        if (isFresh) {
+          const isEdited = Boolean(mEdit > 0);
+          await this.recordBotMessage(entity, m, isEdited);
+        }
+      }
+    } catch {
+      // non-fatal active pull
+    }
+  }
+
   public async interactWithBot(params: {
     botUsernameOrKey: string;
     action: 'send_text' | 'click_inline';
@@ -1403,68 +1558,68 @@ export class TelegramScannerService {
     }
 
     const botKey = this.getBotKeyFromUser(entity);
-    this.ensureBotRecord(entity);
+    const record = this.ensureBotRecord(entity);
+    const startedUnix = Math.floor(Date.now() / 1000);
 
     if (params.action === 'send_text') {
       const text = String(params.text || '/start').trim() || '/start';
       const isCmd = text.startsWith('/');
-      this.recentTriggers.set(botKey, {
+      const trigger: PendingTrigger = {
         timestamp: Date.now(),
         type: isCmd ? 'command' : 'reply_button',
         text,
         parentButtonId: params.parentButtonId ?? null,
-      });
+        handledMessageEvent: false,
+      };
+      this.recentTriggers.set(botKey, trigger);
 
       await this.client.sendMessage(entity, { message: text });
-      await new Promise((r) => setTimeout(r, 1200));
+      await this.waitAndPullBurstResponses(entity, trigger, startedUnix);
 
       return { bot: this.getCapturedBot(botKey) };
     }
 
-    if (!params.messageId || !params.callbackData) {
-      throw new Error('بيانات الزر أو معرف الرسالة غير مكتملة للتفاعل مع الزر.');
+    if (!params.callbackData) {
+      throw new Error('بيانات الزر غير مكتملة للتفاعل مع الزر.');
     }
+
+    // Locate the live Telegram message carrying this callbackData; if overwritten by another menu, replay ancestor path automatically!
+    let liveMatch = await this.findLiveMessageWithCallback(
+      entity,
+      params.callbackData,
+      params.messageId
+    );
+    if (!liveMatch && params.parentButtonId) {
+      liveMatch = await this.replayPathToFindButton(
+        entity,
+        botKey,
+        record,
+        params.parentButtonId,
+        params.callbackData
+      );
+    }
+
+    const targetMessageId = liveMatch?.messageId || params.messageId;
+    if (!targetMessageId) {
+      throw new Error('تعذر العثور على رسالة نشطة تحتوي على هذا الزر في تيليجرام. حاول إرسال /start للبوت.');
+    }
+    const dataBuffer = liveMatch?.dataBuffer || Buffer.from(params.callbackData, 'utf-8');
 
     const trigger: PendingTrigger = {
       timestamp: Date.now(),
       type: 'inline_button',
       callbackData: params.callbackData,
       parentButtonId: params.parentButtonId ?? null,
-      sourceMessageId: params.messageId,
+      sourceMessageId: targetMessageId,
       handledMessageEvent: false,
     };
     this.recentTriggers.set(botKey, trigger);
 
-    let dataBuffer = Buffer.from(params.callbackData, 'utf-8');
-    try {
-      const msgs = await this.client.getMessages(entity, { ids: [params.messageId] });
-      const msg = msgs?.[0];
-      if (msg?.replyMarkup instanceof Api.ReplyInlineMarkup) {
-        for (const row of msg.replyMarkup.rows || []) {
-          for (const btn of row.buttons || []) {
-            if (btn instanceof Api.KeyboardButtonCallback && btn.data) {
-              const rawBuf = Buffer.from(btn.data);
-              const utf = rawBuf.toString('utf-8');
-              const b64 = rawBuf.toString('base64');
-              if (
-                utf.slice(0, 64) === params.callbackData ||
-                b64.slice(0, 64) === params.callbackData
-              ) {
-                dataBuffer = rawBuf;
-                break;
-              }
-            }
-          }
-        }
-      }
-    } catch {
-      // fallback
-    }
-
+    const clickStartedUnix = Math.floor(Date.now() / 1000);
     const answer = await this.client.invoke(
       new Api.messages.GetBotCallbackAnswer({
         peer: entity,
-        msgId: params.messageId,
+        msgId: targetMessageId,
         data: dataBuffer,
       })
     );
@@ -1478,15 +1633,20 @@ export class TelegramScannerService {
       trigger.callbackAlert = callbackAlert;
     }
 
-    await new Promise((r) => setTimeout(r, 1100));
+    await this.waitAndPullBurstResponses(
+      entity,
+      trigger,
+      clickStartedUnix,
+      targetMessageId
+    );
 
     if (callbackAlert && !trigger.handledMessageEvent) {
-      const record = this.ensureBotRecord(entity);
+      const latestRecord = this.ensureBotRecord(entity);
       const alertEvent: CapturedMessageEvent = {
         id: `ev_alert_${Date.now()}_${Math.random().toString(36).slice(2, 7)}`,
         botKey,
-        telegramMessageId: params.messageId,
-        sourceMessageId: params.messageId,
+        telegramMessageId: targetMessageId,
+        sourceMessageId: targetMessageId,
         timestamp: new Date().toISOString(),
         kind: 'callback_alert',
         isEdited: false,
@@ -1500,9 +1660,9 @@ export class TelegramScannerService {
         replyButtons: [],
         callbackAlert,
       };
-      record.events.push(alertEvent);
-      record.lastInteractionAt = alertEvent.timestamp;
-      this.captures[botKey] = this.rebuildRecord(record);
+      latestRecord.events.push(alertEvent);
+      latestRecord.lastInteractionAt = alertEvent.timestamp;
+      this.captures[botKey] = this.rebuildRecord(latestRecord);
       this.saveCapturesToDisk();
     }
 
@@ -1510,6 +1670,244 @@ export class TelegramScannerService {
       bot: this.getCapturedBot(botKey),
       ...(callbackAlert ? { callbackAlert } : {}),
     };
+  }
+
+  public stopFullBotCrawl(): ScanCrawlProgress | null {
+    if (this.activeCrawl && this.activeCrawl.state === 'running') {
+      this.crawlAbortRequested = true;
+      this.activeCrawl = {
+        ...this.activeCrawl,
+        currentLabel: 'جاري إيقاف الالتقاط...',
+      };
+    }
+    return this.activeCrawl ? { ...this.activeCrawl } : null;
+  }
+
+  public async startFullBotCrawl(params: {
+    botUsernameOrKey: string;
+    maxSteps?: number;
+    maxDepth?: number;
+  }): Promise<{
+    crawlProgress: ScanCrawlProgress;
+    bot: CapturedBotRecord | null;
+  }> {
+    if (!this.client || this.state !== 'connected') {
+      throw new Error('حساب تيليجرام غير متصل حالياً.');
+    }
+    if (this.activeCrawl?.state === 'running') {
+      throw new Error('توجد عملية التقاط كامل قيد التنفيذ حالياً. انتظر انتهاءها أو أوقفها أولاً.');
+    }
+
+    const rawTarget = String(params.botUsernameOrKey || '').trim();
+    if (!rawTarget) {
+      throw new Error('يرجى تحديد معرف البوت (مثال: @BotFather) أو اختياره أولاً.');
+    }
+
+    const existingKey = rawTarget.replace(/^@/, '').trim().toLowerCase();
+    const existingRecord = this.captures[existingKey];
+    const peer: any = existingRecord?.username
+      ? existingRecord.username
+      : existingKey.startsWith('id_')
+      ? BigInt(existingKey.slice(3))
+      : rawTarget.startsWith('@')
+      ? rawTarget
+      : `@${rawTarget}`;
+
+    const entity = (await this.client.getEntity(peer)) as Api.User;
+    if (!(entity instanceof Api.User) || !entity.bot) {
+      throw new Error('الحساب المحدد ليس بوت تيليجرام. يرجى إدخال معرف بوت صالح.');
+    }
+
+    const botKey = this.getBotKeyFromUser(entity);
+    const record = this.ensureBotRecord(entity);
+    const maxSteps = Math.max(5, Math.min(80, Number(params.maxSteps || 40)));
+    const maxDepth = Math.max(1, Math.min(6, Number(params.maxDepth || 4)));
+
+    this.crawlAbortRequested = false;
+    this.activeCrawl = {
+      botKey,
+      botLabel: record.customName || record.displayName || `@${botKey}`,
+      state: 'running',
+      visitedCount: 0,
+      queuedCount: 1,
+      maxSteps,
+      currentLabel: '/start',
+      startedAt: new Date().toISOString(),
+    };
+
+    void this.runFullBotCrawlLoop(entity, botKey, maxSteps, maxDepth);
+
+    return {
+      crawlProgress: { ...this.activeCrawl },
+      bot: this.getCapturedBot(botKey),
+    };
+  }
+
+  private findMessageIdForButtonInRecord(
+    record: CapturedBotRecord,
+    buttonId: string,
+    callbackData?: string
+  ): number | undefined {
+    for (let i = record.events.length - 1; i >= 0; i--) {
+      const ev = record.events[i];
+      if (!ev.telegramMessageId || ev.kind === 'callback_alert') continue;
+      if (
+        ev.inlineButtons.some(
+          (b) => b.id === buttonId || (callbackData && b.callbackData === callbackData)
+        )
+      ) {
+        return ev.telegramMessageId;
+      }
+      if (ev.replyButtons.some((b) => b.id === buttonId)) {
+        return ev.telegramMessageId;
+      }
+    }
+    return undefined;
+  }
+
+  private async runFullBotCrawlLoop(
+    entity: Api.User,
+    botKey: string,
+    maxSteps: number,
+    maxDepth: number
+  ) {
+    const visitedKeys = new Set<string>();
+    let visitedCount = 0;
+
+    try {
+      await this.ensureBotProfileAndCommands(entity, botKey);
+
+      const initialRec = this.getCapturedBot(botKey);
+      const hasStart = initialRec?.events.some(
+        (e) =>
+          e.kind === 'start_response' ||
+          e.inlineButtons.length > 0 ||
+          e.replyButtons.length > 0
+      );
+
+      if (!hasStart && !this.crawlAbortRequested) {
+        if (this.activeCrawl) {
+          this.activeCrawl = {
+            ...this.activeCrawl,
+            currentLabel: '/start',
+            visitedCount: 0,
+          };
+        }
+        await this.interactWithBot({
+          botUsernameOrKey: botKey,
+          action: 'send_text',
+          text: '/start',
+        }).catch((err) => {
+          console.warn('Full crawl initial /start error:', err?.message || err);
+        });
+        await new Promise((r) => setTimeout(r, 500));
+      }
+
+      while (
+        !this.crawlAbortRequested &&
+        this.client &&
+        this.state === 'connected' &&
+        visitedCount < maxSteps
+      ) {
+        const latestRec = this.getCapturedBot(botKey);
+        if (!latestRec) break;
+
+        const candidates = collectBotCrawlCandidates(latestRec, visitedKeys, { maxDepth });
+        if (candidates.length === 0) break;
+
+        const next = candidates[0];
+        visitedKeys.add(next.dedupKey);
+
+        if (this.activeCrawl) {
+          this.activeCrawl = {
+            ...this.activeCrawl,
+            visitedCount,
+            queuedCount: candidates.length,
+            currentLabel: next.label,
+          };
+        }
+
+        try {
+          if (next.kind === 'command' && next.commandText) {
+            await this.interactWithBot({
+              botUsernameOrKey: botKey,
+              action: 'send_text',
+              text: next.commandText,
+            });
+          } else if (next.button?.type === 'inline' && next.button.callbackData) {
+            const msgId = this.findMessageIdForButtonInRecord(
+              latestRec,
+              next.button.id,
+              next.button.callbackData
+            );
+            await this.interactWithBot({
+              botUsernameOrKey: botKey,
+              action: 'click_inline',
+              messageId: msgId,
+              callbackData: next.button.callbackData,
+              parentButtonId: next.button.id,
+            });
+          } else if (next.button?.type === 'reply') {
+            await this.interactWithBot({
+              botUsernameOrKey: botKey,
+              action: 'send_text',
+              text: next.button.text,
+              parentButtonId: next.button.id,
+            });
+          }
+        } catch (stepErr: any) {
+          const msg = String(stepErr?.errorMessage || stepErr?.message || '');
+          const floodMatch = msg.match(/FLOOD_WAIT_(\d+)/);
+          if (floodMatch) {
+            const waitSec = parseInt(floodMatch[1], 10);
+            if (waitSec <= 15) {
+              await new Promise((r) => setTimeout(r, (waitSec + 1) * 1000));
+            } else {
+              throw new Error(`تم إيقاف المسح الشامل مؤقتاً بسبب حد الحماية من تيليجرام (${waitSec} ثانية).`);
+            }
+          } else {
+            console.warn(`Full crawl step skipped (${next.label}):`, msg);
+          }
+        }
+
+        visitedCount += 1;
+        if (this.activeCrawl) {
+          this.activeCrawl = {
+            ...this.activeCrawl,
+            visitedCount,
+          };
+        }
+
+        if (!this.crawlAbortRequested) {
+          await new Promise((r) => setTimeout(r, 450));
+        }
+      }
+
+      if (this.activeCrawl) {
+        this.activeCrawl = {
+          ...this.activeCrawl,
+          state: this.crawlAbortRequested ? 'stopped' : 'completed',
+          visitedCount,
+          queuedCount: 0,
+          currentLabel: undefined,
+          finishedAt: new Date().toISOString(),
+        };
+      }
+    } catch (err: any) {
+      if (this.activeCrawl) {
+        this.activeCrawl = {
+          ...this.activeCrawl,
+          state: 'error',
+          visitedCount,
+          queuedCount: 0,
+          currentLabel: undefined,
+          finishedAt: new Date().toISOString(),
+          error: err?.message || 'حدث خطأ أثناء الالتقاط الكامل للبوت.',
+        };
+      }
+    } finally {
+      this.suppressCaptureBots.delete(botKey);
+    }
   }
 
   public linkEventToTarget(

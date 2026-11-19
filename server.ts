@@ -2205,6 +2205,27 @@ async function startServer() {
     }
   });
 
+  app.post('/api/scan/crawl', async (req, res) => {
+    const { botUsernameOrKey, maxSteps, maxDepth } = req.body || {};
+    try {
+      const result = await scannerService.startFullBotCrawl({
+        botUsernameOrKey,
+        maxSteps: maxSteps ? Number(maxSteps) : undefined,
+        maxDepth: maxDepth ? Number(maxDepth) : undefined,
+      });
+      res.json(result);
+    } catch (err: any) {
+      res.status(400).json({
+        error: err?.message || 'فشل بدء المسح الشامل للبوت.',
+      });
+    }
+  });
+
+  app.post('/api/scan/crawl/stop', (_req, res) => {
+    const crawlProgress = scannerService.stopFullBotCrawl();
+    res.json({ crawlProgress });
+  });
+
   app.post('/api/scan/bots/:botKey/link-step', (req, res) => {
     const { eventId, targetParentId } = req.body || {};
     if (!eventId) {

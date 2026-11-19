@@ -464,6 +464,39 @@ export const api = {
       return data;
     },
 
+    async crawlFullBot(params: {
+      botUsernameOrKey: string;
+      maxSteps?: number;
+      maxDepth?: number;
+    }): Promise<{
+      crawlProgress: import('../types/scan').ScanCrawlProgress;
+      bot: CapturedBotRecord | null;
+    }> {
+      const res = await fetch('/api/scan/crawl', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(params),
+      });
+      const data = await res.json().catch(() => ({}));
+      if (!res.ok) {
+        throw new Error(data.error || 'فشل بدء التقاط كل البوت');
+      }
+      return data;
+    },
+
+    async stopCrawl(): Promise<{
+      crawlProgress: import('../types/scan').ScanCrawlProgress | null;
+    }> {
+      const res = await fetch('/api/scan/crawl/stop', {
+        method: 'POST',
+      });
+      const data = await res.json().catch(() => ({}));
+      if (!res.ok) {
+        throw new Error(data.error || 'تعذر إيقاف عملية الالتقاط');
+      }
+      return data;
+    },
+
     async linkStep(
       botKey: string,
       eventId: string,

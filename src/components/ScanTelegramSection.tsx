@@ -1,4 +1,4 @@
-import React, { useCallback, useEffect, useMemo, useState } from 'react';
+import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import {
   AlertCircle,
   ArrowRight,
@@ -11,6 +11,7 @@ import {
   EyeOff,
   FileJson,
   Key,
+  Layers,
   Link2,
   LogOut,
   MessageSquare,
@@ -23,11 +24,12 @@ import {
   Send,
   ShieldCheck,
   Smartphone,
+  Square,
   Trash2,
   Users,
 } from 'lucide-react';
-import { BotConfig } from '../types/bot';
-import { CapturedBotRecord, ScanStatusResponse } from '../types/scan';
+import { BotButton, BotConfig } from '../types/bot';
+import { CapturedBotRecord, CapturedMessageEvent, ScanStatusResponse } from '../types/scan';
 import { api } from '../services/api';
 import {
   createPreviewBotFromBlueprint,
@@ -130,14 +132,40 @@ export const ScanTelegramSection: React.FC<ScanTelegramSectionProps> = ({
     loadStatusAndCaptures();
   }, [loadStatusAndCaptures]);
 
-  // Live poll captures every 2.5s whenever connected so external Telegram interactions appear automatically
+  const isCrawling = status.crawlProgress?.state === 'running';
+  const prevCrawlStateRef = useRef<string | null>(null);
+
+  useEffect(() => {
+    const crawl = status.crawlProgress;
+    const prev = prevCrawlStateRef.current;
+    const curr = crawl?.state || null;
+    prevCrawlStateRef.current = curr;
+
+    if (prev === 'running' && curr === 'completed' && crawl) {
+      setInteractionError(null);
+      setInteractionNotice(
+        `تم التقاط كل البوت (${crawl.botLabel}) بالكامل! (${crawl.visitedCount} خطوة/زر تم فحصها وربط قوائمها).`
+      );
+    } else if (prev === 'running' && curr === 'stopped' && crawl) {
+      setInteractionNotice(
+        `تم إيقاف الالتقاط الكامل للبوت (${crawl.botLabel}) مع حفظ جميع القوائم الملتقطة (${crawl.visitedCount} خطوة).`
+      );
+    } else if (prev === 'running' && curr === 'error' && crawl) {
+      setInteractionError(crawl.error || 'توقف المسح الشامل بسبب خطأ أثناء الفحص.');
+    }
+  }, [status.crawlProgress]);
+
+  // Live poll captures every 1.1s while full-bot crawl runs, or 2.5s when idle/connected
   useEffect(() => {
     if (!status.isConnected) return;
-    const interval = setInterval(() => {
-      loadStatusAndCaptures();
-    }, 2500);
+    const interval = setInterval(
+      () => {
+        loadStatusAndCaptures();
+      },
+      isCrawling ? 1100 : 2500
+    );
     return () => clearInterval(interval);
-  }, [status.isConnected, loadStatusAndCaptures]);
+  }, [status.isConnected, isCrawling, loadStatusAndCaptures]);
 
   const selectedBot = useMemo(
     () => capturedBots.find((b) => b.botKey === selectedBotKey) || null,
@@ -407,8 +435,11 @@ export const ScanTelegramSection: React.FC<ScanTelegramSectionProps> = ({
     }
   };
 
-  const handleSendTextToSelectedBot = async (textToSend: string) => {
-    if (!selectedBot || !textToSend.trim()) return;
+  const handleSendTextToSelectedBot = async (
+    textToSend: string,
+    parentButtonId?: string | null
+  ): Promise<boolean> => {
+    if (!selectedBot || !textToSend.trim()) return false;
     setInteractionError(null);
     setInteractionNotice(null);
     try {
@@ -417,6 +448,7 @@ export const ScanTelegramSection: React.FC<ScanTelegramSectionProps> = ({
         botUsernameOrKey: selectedBot.username || selectedBot.botKey,
         action: 'send_text',
         text: textToSend.trim(),
+        ...(parentButtonId ? { parentButtonId } : {}),
       });
       if (res.bot) {
         setCapturedBots((prev) =>
@@ -426,8 +458,10 @@ export const ScanTelegramSection: React.FC<ScanTelegramSectionProps> = ({
         await loadStatusAndCaptures();
       }
       setCustomMessageInput('');
+      return true;
     } catch (err: any) {
       setInteractionError(err?.message || 'فشل إرسال الأمر أو الرسالة إلى البوت.');
+      return false;
     } finally {
       setIsInteracting(false);
     }
@@ -438,8 +472,8 @@ export const ScanTelegramSection: React.FC<ScanTelegramSectionProps> = ({
     btnId: string,
     btnText: string,
     callbackData?: string
-  ) => {
-    if (!selectedBot || !callbackData) return;
+  ): Promise<boolean> => {
+    if (!selectedBot || !callbackData) return false;
     setInteractionError(null);
     setInteractionNotice(null);
     try {
@@ -461,10 +495,153 @@ export const ScanTelegramSection: React.FC<ScanTelegramSectionProps> = ({
       } else {
         await loadStatusAndCaptures();
       }
+      return true;
     } catch (err: any) {
       setInteractionError(err?.message || `فشل الضغط على الزر "${btnText}".`);
+      return false;
     } finally {
       setIsInteracting(false);
+    }
+  };
+
+  const findSourceMessageIdForButton = (
+    bot: CapturedBotRecord,
+    btn: BotButton
+  ): number | undefined => {
+    for (let i = bot.events.length - 1; i >= 0; i--) {
+      const ev = bot.events[i];
+      if (!ev.telegramMessageId || ev.kind === 'callback_alert') continue;
+      const inInline = ev.inlineButtons.some(
+        (b) => b.id === btn.id || (btn.callbackData && b.callbackData === btn.callbackData)
+      );
+      if (inInline) return ev.telegramMessageId;
+      const inReply = ev.replyButtons.some((b) => b.id === btn.id);
+      if (inReply) return ev.telegramMessageId;
+    }
+    for (let i = bot.events.length - 1; i >= 0; i--) {
+      if (bot.events[i].telegramMessageId) return bot.events[i].telegramMessageId;
+    }
+    return undefined;
+  };
+
+  const handleSimulatorTriggerButton = async (button: BotButton): Promise<boolean> => {
+    if (!selectedBot || !status.isConnected) return false;
+    if (button.type === 'inline') {
+      const msgId = findSourceMessageIdForButton(selectedBot, button) || 0;
+      const cbData = button.callbackData || button.id;
+      return handleClickCapturedInlineButton(msgId, button.id, button.text, cbData);
+    }
+    return handleSendTextToSelectedBot(button.text, button.id);
+  };
+
+  const handleSimulatorSendText = async (text: string): Promise<boolean> => {
+    if (!selectedBot || !status.isConnected) return false;
+    return handleSendTextToSelectedBot(text);
+  };
+
+  const handleScanAllButtonsInEvent = async (ev: CapturedMessageEvent) => {
+    if (!selectedBot || !status.isConnected || isInteracting) return;
+    const inlineTargets = ev.inlineButtons.filter(
+      (b) => b.actionType === 'flow' && Boolean(b.callbackData)
+    );
+    const replyTargets = ev.replyButtons.filter((b) => b.actionType === 'flow');
+    if (inlineTargets.length === 0 && replyTargets.length === 0) return;
+
+    setInteractionError(null);
+    setInteractionNotice(
+      `جاري مسح وربط ${inlineTargets.length + replyTargets.length} أزرار في هذه القائمة...`
+    );
+    setIsInteracting(true);
+
+    try {
+      const targetBot = selectedBot.username || selectedBot.botKey;
+      let latestBot = selectedBot;
+
+      for (const btn of inlineTargets) {
+        const res = await api.scan.interact({
+          botUsernameOrKey: targetBot,
+          action: 'click_inline',
+          messageId: ev.telegramMessageId,
+          callbackData: btn.callbackData!,
+          parentButtonId: btn.id,
+        });
+        if (res.bot) {
+          latestBot = res.bot;
+          setCapturedBots((prev) =>
+            prev.map((b) => (b.botKey === res.bot!.botKey ? res.bot! : b))
+          );
+        }
+      }
+
+      for (const btn of replyTargets) {
+        const res = await api.scan.interact({
+          botUsernameOrKey: targetBot,
+          action: 'send_text',
+          text: btn.text,
+          parentButtonId: btn.id,
+        });
+        if (res.bot) {
+          latestBot = res.bot;
+          setCapturedBots((prev) =>
+            prev.map((b) => (b.botKey === res.bot!.botKey ? res.bot! : b))
+          );
+        }
+      }
+
+      if (latestBot) {
+        setCapturedBots((prev) =>
+          prev.map((b) => (b.botKey === latestBot.botKey ? latestBot : b))
+        );
+      }
+      setInteractionNotice(
+        `تم مسح جميع أزرار القائمة (${inlineTargets.length + replyTargets.length}) وربط كل زر بقائمته الفرعية بنجاح.`
+      );
+    } catch (err: any) {
+      setInteractionError(err?.message || 'حدث خطأ أثناء المسح المتتابع لأزرار القائمة.');
+    } finally {
+      setIsInteracting(false);
+    }
+  };
+
+  const handleStartFullBotCrawl = async (botTarget: string) => {
+    const cleanTarget = botTarget.trim();
+    if (!cleanTarget) {
+      setInteractionError('أدخل معرف البوت مثل @BotFather أولاً لالتقاط كل البوت.');
+      return;
+    }
+    setInteractionError(null);
+    setInteractionNotice(null);
+    try {
+      setIsInteracting(true);
+      const res = await api.scan.crawlFullBot({
+        botUsernameOrKey: cleanTarget,
+        maxSteps: 45,
+        maxDepth: 4,
+      });
+      setStatus((prev) => ({ ...prev, crawlProgress: res.crawlProgress }));
+      if (res.bot) {
+        setCapturedBots((prev) => {
+          const exists = prev.some((b) => b.botKey === res.bot!.botKey);
+          return exists
+            ? prev.map((b) => (b.botKey === res.bot!.botKey ? res.bot! : b))
+            : [res.bot!, ...prev];
+        });
+        setSelectedBotKey(res.bot.botKey);
+      }
+      await loadStatusAndCaptures();
+    } catch (err: any) {
+      setInteractionError(err?.message || 'تعذر بدء الالتقاط الكامل للبوت.');
+    } finally {
+      setIsInteracting(false);
+    }
+  };
+
+  const handleStopFullBotCrawl = async () => {
+    try {
+      const res = await api.scan.stopCrawl();
+      setStatus((prev) => ({ ...prev, crawlProgress: res.crawlProgress }));
+    } catch (err: any) {
+      setInteractionError(err?.message || 'تعذر إيقاف الالتقاط الكامل.');
     }
   };
 
@@ -1142,19 +1319,84 @@ export const ScanTelegramSection: React.FC<ScanTelegramSectionProps> = ({
                 className="w-full px-3.5 py-2.5 text-sm font-mono bg-[#F5F9FD] dark:bg-slate-950/70 border border-sky-200 dark:border-slate-700 rounded-xl text-slate-900 dark:text-slate-100 focus:outline-hidden focus:ring-2 focus:ring-sky-500/40"
               />
             </div>
-            <button
-              type="submit"
-              disabled={isInteracting}
-              className="inline-flex items-center justify-center gap-2 px-5 py-2.5 text-xs font-bold text-white bg-sky-600 hover:bg-sky-500 disabled:opacity-50 rounded-xl transition-colors cursor-pointer shrink-0 h-[42px]"
-            >
-              {isInteracting ? (
-                <RefreshCw className="w-4 h-4 animate-spin" />
-              ) : (
-                <Send className="w-4 h-4" />
-              )}
-              <span>إرسال /start والتقاط التصميم</span>
-            </button>
+            <div className="flex flex-wrap items-center gap-2 shrink-0">
+              <button
+                type="submit"
+                disabled={isInteracting || isCrawling}
+                className="inline-flex items-center justify-center gap-2 px-4 py-2.5 text-xs font-bold text-white bg-sky-600 hover:bg-sky-500 disabled:opacity-50 rounded-xl transition-colors cursor-pointer h-[42px]"
+              >
+                {isInteracting && !isCrawling ? (
+                  <RefreshCw className="w-4 h-4 animate-spin" />
+                ) : (
+                  <Send className="w-4 h-4" />
+                )}
+                <span>إرسال /start</span>
+              </button>
+              <button
+                type="button"
+                disabled={isInteracting || isCrawling}
+                onClick={() => handleStartFullBotCrawl(targetBotInput)}
+                className="inline-flex items-center justify-center gap-2 px-4 py-2.5 text-xs font-bold text-white bg-emerald-600 hover:bg-emerald-500 disabled:opacity-50 rounded-xl transition-colors cursor-pointer h-[42px]"
+              >
+                <Layers className="w-4 h-4" />
+                <span>التقاط كل البوت</span>
+              </button>
+            </div>
           </form>
+        </section>
+      )}
+
+      {/* Live Full-Bot Crawl Progress Panel */}
+      {isCrawling && status.crawlProgress && (
+        <section
+          aria-live="polite"
+          className="mb-5 bg-emerald-50/90 dark:bg-emerald-950/30 border border-emerald-200 dark:border-emerald-700/60 rounded-2xl p-4 sm:p-5 space-y-3"
+        >
+          <div className="flex flex-wrap items-center justify-between gap-3">
+            <div className="flex items-center gap-2.5">
+              <RefreshCw className="w-4 h-4 text-emerald-600 dark:text-emerald-400 animate-spin shrink-0" />
+              <div>
+                <h3 className="text-xs sm:text-sm font-bold text-emerald-950 dark:text-emerald-100">
+                  جاري التقاط كل قوائم وأزرار البوت ({status.crawlProgress.botLabel})
+                </h3>
+                <p className="text-xs text-emerald-800/85 dark:text-emerald-300/85 mt-0.5 tabular-nums">
+                  {status.crawlProgress.currentLabel
+                    ? `يتم الآن فحص: ${status.crawlProgress.currentLabel} · `
+                    : ''}
+                  تم فحص {status.crawlProgress.visitedCount} من أصل {status.crawlProgress.maxSteps} (متبقي في الطابور: {status.crawlProgress.queuedCount})
+                </p>
+              </div>
+            </div>
+            <button
+              type="button"
+              onClick={handleStopFullBotCrawl}
+              className="inline-flex items-center gap-1.5 px-3.5 py-2 text-xs font-bold text-rose-700 dark:text-rose-200 bg-white dark:bg-slate-900 hover:bg-rose-50 dark:hover:bg-rose-950/40 border border-rose-200 dark:border-rose-700 rounded-xl transition-colors cursor-pointer"
+            >
+              <Square className="w-3.5 h-3.5 fill-current" />
+              <span>إيقاف الالتقاط</span>
+            </button>
+          </div>
+          <div className="w-full h-2 rounded-full bg-emerald-200/70 dark:bg-emerald-900/60 overflow-hidden">
+            <div
+              className="h-full bg-emerald-600 dark:bg-emerald-500 transition-all duration-300"
+              style={{
+                width: `${Math.max(
+                  8,
+                  Math.min(
+                    100,
+                    Math.round(
+                      (status.crawlProgress.visitedCount /
+                        Math.max(
+                          1,
+                          status.crawlProgress.visitedCount + status.crawlProgress.queuedCount
+                        )) *
+                        100
+                    )
+                  )
+                )}%`,
+              }}
+            />
+          </div>
         </section>
       )}
 
@@ -1258,17 +1500,30 @@ export const ScanTelegramSection: React.FC<ScanTelegramSectionProps> = ({
                       </div>
                     </div>
 
-                    <div className="flex items-center gap-2">
+                    <div className="flex flex-wrap items-center gap-2">
                       {status.isConnected && (
-                        <button
-                          type="button"
-                          onClick={() => handleSendTextToSelectedBot('/start')}
-                          disabled={isInteracting}
-                          className="inline-flex items-center gap-1.5 px-3 py-2 text-xs font-semibold text-sky-700 dark:text-sky-300 bg-sky-50 dark:bg-slate-800 hover:bg-sky-100 dark:hover:bg-slate-700 border border-sky-200 dark:border-slate-700 rounded-xl cursor-pointer"
-                        >
-                          <Send className="w-3.5 h-3.5" />
-                          <span>إعادة إرسال /start</span>
-                        </button>
+                        <>
+                          <button
+                            type="button"
+                            onClick={() =>
+                              handleStartFullBotCrawl(selectedBot.username || selectedBot.botKey)
+                            }
+                            disabled={isInteracting || isCrawling}
+                            className="inline-flex items-center gap-1.5 px-3 py-2 text-xs font-bold text-white bg-emerald-600 hover:bg-emerald-500 disabled:opacity-50 rounded-xl transition-colors cursor-pointer"
+                          >
+                            <Layers className="w-3.5 h-3.5" />
+                            <span>التقاط كل البوت</span>
+                          </button>
+                          <button
+                            type="button"
+                            onClick={() => handleSendTextToSelectedBot('/start')}
+                            disabled={isInteracting || isCrawling}
+                            className="inline-flex items-center gap-1.5 px-3 py-2 text-xs font-semibold text-sky-700 dark:text-sky-300 bg-sky-50 dark:bg-slate-800 hover:bg-sky-100 dark:hover:bg-slate-700 border border-sky-200 dark:border-slate-700 disabled:opacity-50 rounded-xl cursor-pointer"
+                          >
+                            <Send className="w-3.5 h-3.5" />
+                            <span>إعادة إرسال /start</span>
+                          </button>
+                        </>
                       )}
                       <button
                         type="button"
@@ -1413,8 +1668,21 @@ export const ScanTelegramSection: React.FC<ScanTelegramSectionProps> = ({
                           {/* Interactive Captured Inline Buttons */}
                           {ev.inlineButtons.length > 0 && (
                             <div className="space-y-1.5">
-                              <div className="text-[11px] font-medium text-slate-500 dark:text-slate-400">
-                                أزرار Inline (اضغط لاختبارها والتقاط تدفقها داخل النظام):
+                              <div className="flex flex-wrap items-center justify-between gap-2">
+                                <div className="text-[11px] font-medium text-slate-500 dark:text-slate-400">
+                                  أزرار Inline (اضغط أي زر لمسح قائمته كاملة):
+                                </div>
+                                {status.isConnected &&
+                                  ev.inlineButtons.filter((b) => b.actionType === 'flow' && b.callbackData).length >= 2 && (
+                                    <button
+                                      type="button"
+                                      disabled={isInteracting}
+                                      onClick={() => handleScanAllButtonsInEvent(ev)}
+                                      className="text-[11px] font-semibold text-sky-700 dark:text-sky-300 hover:underline disabled:opacity-50 cursor-pointer"
+                                    >
+                                      مسح كل أزرار هذه القائمة
+                                    </button>
+                                  )}
                               </div>
                               <div className="flex flex-wrap gap-1.5">
                                 {ev.inlineButtons.map((btn) => (
@@ -1455,8 +1723,22 @@ export const ScanTelegramSection: React.FC<ScanTelegramSectionProps> = ({
                           {/* Interactive Captured Reply Buttons */}
                           {ev.replyButtons.length > 0 && (
                             <div className="space-y-1.5">
-                              <div className="text-[11px] font-medium text-slate-500 dark:text-slate-400">
-                                أزرار Reply (اضغط لإرسال نص الزر للبوت والتقاط رده):
+                              <div className="flex flex-wrap items-center justify-between gap-2">
+                                <div className="text-[11px] font-medium text-slate-500 dark:text-slate-400">
+                                  أزرار Reply (اضغط لإرسال نص الزر وربطه بقائمته):
+                                </div>
+                                {status.isConnected &&
+                                  ev.inlineButtons.length === 0 &&
+                                  ev.replyButtons.filter((b) => b.actionType === 'flow').length >= 2 && (
+                                    <button
+                                      type="button"
+                                      disabled={isInteracting}
+                                      onClick={() => handleScanAllButtonsInEvent(ev)}
+                                      className="text-[11px] font-semibold text-sky-700 dark:text-sky-300 hover:underline disabled:opacity-50 cursor-pointer"
+                                    >
+                                      مسح كل أزرار هذه القائمة
+                                    </button>
+                                  )}
                               </div>
                               <div className="flex flex-wrap gap-1.5">
                                 {ev.replyButtons.map((btn) => (
@@ -1468,7 +1750,7 @@ export const ScanTelegramSection: React.FC<ScanTelegramSectionProps> = ({
                                       !status.isConnected ||
                                       btn.actionType !== 'flow'
                                     }
-                                    onClick={() => handleSendTextToSelectedBot(btn.text)}
+                                    onClick={() => handleSendTextToSelectedBot(btn.text, btn.id)}
                                     className="px-3 py-1.5 text-xs font-medium rounded-lg border border-slate-200 dark:border-slate-700 bg-slate-100 dark:bg-slate-800 text-slate-800 dark:text-slate-100 hover:border-sky-500 disabled:opacity-60 transition-colors cursor-pointer"
                                   >
                                     {btn.text}
@@ -1552,7 +1834,22 @@ export const ScanTelegramSection: React.FC<ScanTelegramSectionProps> = ({
                   </div>
 
                   {rightTab === 'simulator' ? (
-                    <TelegramSimulator bot={previewBot} />
+                    <div className="space-y-2">
+                      <p className="text-[11px] text-slate-500 dark:text-slate-400 leading-relaxed">
+                        {status.isConnected
+                          ? 'أي زر تضغطه هنا في المحاكي أو داخل تطبيق تيليجرام يتفاعل مباشرة ويرتبط تلقائياً بجميع أزرار القائمة التي تظهر منه.'
+                          : 'معاينة القوائم الملتقطة (اربط حسابك أعلاه لتتمكن من المسح التفاعلي مباشرة من داخل المحاكي).'}
+                      </p>
+                      <TelegramSimulator
+                        bot={previewBot}
+                        scanMode={true}
+                        isScanning={isInteracting || isCrawling}
+                        onScanTriggerButton={
+                          status.isConnected ? handleSimulatorTriggerButton : undefined
+                        }
+                        onScanSendText={status.isConnected ? handleSimulatorSendText : undefined}
+                      />
+                    </div>
                   ) : (
                     <div>
                       <textarea
