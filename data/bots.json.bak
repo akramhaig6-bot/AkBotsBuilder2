@@ -1,0 +1,702 @@
+[
+  {
+    "id": "bot_1794054398952_8r6g4",
+    "name": "بوت جديد 1",
+    "createdAt": "2026-11-07T12:26:38.952Z",
+    "updatedAt": "2026-11-14T20:22:32.938Z",
+    "isConnected": true,
+    "startMessage": {
+      "text": "مرحباً بكم في متجرنا الرسمي على تيليجرام! يسعدنا تقديم أفضل الخدمات.",
+      "isSaved": true,
+      "media": []
+    },
+    "inlineButtons": [
+      {
+        "id": "btn_1794054448753_r46d",
+        "text": "🛍️ استعراض المنتجات",
+        "type": "inline",
+        "color": "default",
+        "actionType": "flow",
+        "row": 0,
+        "order": 0
+      },
+      {
+        "id": "btn_1794054575947_72ds",
+        "text": "🛍️ منتجاتنا الحصرية",
+        "type": "inline",
+        "color": "warning",
+        "actionType": "flow",
+        "row": 1,
+        "order": 0
+      },
+      {
+        "id": "btn_1794054582297_cokd",
+        "text": "📍 فروعنا وموقعنا",
+        "type": "inline",
+        "color": "success",
+        "actionType": "flow",
+        "row": 1,
+        "order": 1
+      },
+      {
+        "id": "btn_1794055131601_lvm7",
+        "text": "vsvsvsvs",
+        "type": "inline",
+        "color": "primary",
+        "actionType": "flow",
+        "row": 2,
+        "order": 0
+      },
+      {
+        "id": "btn_1794056712561_lj93",
+        "text": "اشتراك فوري",
+        "type": "inline",
+        "color": "success",
+        "style": "success",
+        "actionType": "flow",
+        "row": 2,
+        "order": 1
+      }
+    ],
+    "replyButtons": [
+      {
+        "id": "btn_1794054590679_mhcm",
+        "text": "📞 تواصل معنا مباشرة",
+        "type": "reply",
+        "color": "warning",
+        "actionType": "flow",
+        "row": 1,
+        "order": 0
+      }
+    ],
+    "buttonFlows": {
+      "btn_1794054448753_r46d": {
+        "id": "flow_btn_1794054448753_r46d",
+        "buttonId": "btn_1794054448753_r46d",
+        "message": {
+          "text": "اختر التصنيف المناسب لك من القائمة:",
+          "isSaved": true
+        },
+        "media": [],
+        "subButtons": [
+          {
+            "id": "btn_sub_1794054460120_2djb",
+            "text": "✨ العطور والجمال",
+            "type": "inline",
+            "color": "success",
+            "actionType": "flow",
+            "row": 0,
+            "order": 0
+          }
+        ]
+      }
+    },
+    "settings": {
+      "resizeKeyboard": true,
+      "oneTimeKeyboard": false,
+      "simulatorTheme": "dark"
+    },
+    "token": "9134538637:AAF1A2ud4GabBkEXxq8DBt3c6rH8bDTzvWs",
+    "connectionError": null,
+    "botUsername": "agagagagavavavbot",
+    "botFirstName": "Ak",
+    "inlinePagination": {
+      "enabled": true,
+      "mode": "auto",
+      "itemsPerPage": 6,
+      "manualPages": [],
+      "navigation": {
+        "showPrevNext": false,
+        "prevText": "⬅️ السابق",
+        "nextText": "التالي ➡️",
+        "showFirstLast": false,
+        "firstText": "⏮ الأولى",
+        "lastText": "الأخيرة ⏭",
+        "position": "bottom",
+        "showPageNumbers": false,
+        "visibility": "when_needed"
+      },
+      "indicator": {
+        "enabled": false,
+        "template": "📄 صفحة {current} من {total}",
+        "showInNavigationBar": true
+      },
+      "updateMode": "edit"
+    }
+  },
+  {
+    "id": "bot_1794054846560_40s40",
+    "name": "بوت جديد 2",
+    "createdAt": "2026-11-07T12:34:06.560Z",
+    "updatedAt": "2026-11-07T12:34:06.560Z",
+    "isConnected": false,
+    "startMessage": {
+      "text": "",
+      "isSaved": false,
+      "media": []
+    },
+    "inlineButtons": [],
+    "replyButtons": [],
+    "buttonFlows": {},
+    "settings": {
+      "resizeKeyboard": true,
+      "oneTimeKeyboard": false,
+      "simulatorTheme": "dark"
+    }
+  },
+  {
+    "id": "bot_1794688012241_cn0v4",
+    "name": "بوت جديد 3",
+    "createdAt": "2026-11-14T20:26:52.241Z",
+    "updatedAt": "2026-11-14T20:26:52.241Z",
+    "isConnected": false,
+    "startMessage": {
+      "text": "",
+      "isSaved": false,
+      "media": []
+    },
+    "inlineButtons": [],
+    "replyButtons": [],
+    "buttonFlows": {},
+    "settings": {
+      "resizeKeyboard": true,
+      "oneTimeKeyboard": false,
+      "simulatorTheme": "dark"
+    }
+  },
+  {
+    "id": "bot_1794688612689_yg7y5",
+    "name": "بوت جديد 4",
+    "createdAt": "2026-11-14T20:36:52.689Z",
+    "updatedAt": "2026-11-14T20:46:19.223Z",
+    "isConnected": true,
+    "startMessage": {
+      "text": "اساسايايااييا",
+      "isSaved": true,
+      "media": [],
+      "skipMessage": false,
+      "parseMode": "none"
+    },
+    "inlineButtons": [
+      {
+        "id": "btn_1794688780740_0cnc",
+        "text": "hshshs",
+        "type": "inline",
+        "color": "danger",
+        "style": "danger",
+        "actionType": "flow",
+        "skipFlow": false,
+        "parentId": null,
+        "row": 0,
+        "order": 0
+      },
+      {
+        "id": "btn_1794688878331_65mr",
+        "text": "vvsv",
+        "type": "inline",
+        "color": "default",
+        "actionType": "url",
+        "url": "https://moshtarikeen-hubv3.vercel.app/",
+        "parentId": null,
+        "row": 0,
+        "order": 1
+      },
+      {
+        "id": "btn_1794688908534_tsk7",
+        "text": "h",
+        "type": "inline",
+        "color": "default",
+        "actionType": "web_app",
+        "webAppUrl": "https://moshtarikeen-hubv3.vercel.app/",
+        "parentId": null,
+        "row": 1,
+        "order": 0
+      },
+      {
+        "id": "btn_1794689145048_lf1r",
+        "text": "u",
+        "type": "inline",
+        "color": "default",
+        "actionType": "flow",
+        "skipFlow": false,
+        "parentId": null,
+        "row": 1,
+        "order": 1
+      },
+      {
+        "id": "btn_1794689178832_zmdh",
+        "text": "g",
+        "type": "inline",
+        "color": "default",
+        "actionType": "callback_game",
+        "parentId": null,
+        "row": 2,
+        "order": 0
+      }
+    ],
+    "replyButtons": [],
+    "buttonFlows": {
+      "btn_1794688780740_0cnc": {
+        "id": "flow_btn_1794688780740_0cnc",
+        "buttonId": "btn_1794688780740_0cnc",
+        "parentId": null,
+        "flowMode": "normal",
+        "message": null,
+        "media": [],
+        "subButtons": [],
+        "actions": [],
+        "pagination": {
+          "enabled": false,
+          "mode": "auto",
+          "itemsPerPage": 6,
+          "manualPages": [],
+          "navigation": {
+            "showPrevNext": true,
+            "prevText": "⬅️ السابق",
+            "nextText": "التالي ➡️",
+            "showFirstLast": false,
+            "firstText": "⏮ الأولى",
+            "lastText": "الأخيرة ⏭",
+            "position": "bottom",
+            "showPageNumbers": false,
+            "visibility": "when_needed"
+          },
+          "indicator": {
+            "enabled": true,
+            "template": "📄 صفحة {current} من {total}",
+            "showInNavigationBar": true
+          },
+          "menuNavigation": {
+            "showBackButton": true,
+            "backButtonText": "🔙 العودة للقائمة السابقة",
+            "showMainMenuButton": true,
+            "mainMenuButtonText": "🏠 القائمة الرئيسية",
+            "backTarget": "previous"
+          },
+          "updateMode": "edit"
+        }
+      },
+      "btn_1794689145048_lf1r": {
+        "id": "flow_btn_1794689145048_lf1r",
+        "buttonId": "btn_1794689145048_lf1r",
+        "parentId": null,
+        "flowMode": "normal",
+        "message": null,
+        "media": [],
+        "subButtons": [],
+        "actions": [],
+        "pagination": {
+          "enabled": false,
+          "mode": "auto",
+          "itemsPerPage": 6,
+          "manualPages": [],
+          "navigation": {
+            "showPrevNext": true,
+            "prevText": "⬅️ السابق",
+            "nextText": "التالي ➡️",
+            "showFirstLast": false,
+            "firstText": "⏮ الأولى",
+            "lastText": "الأخيرة ⏭",
+            "position": "bottom",
+            "showPageNumbers": false,
+            "visibility": "when_needed"
+          },
+          "indicator": {
+            "enabled": true,
+            "template": "📄 صفحة {current} من {total}",
+            "showInNavigationBar": true
+          },
+          "menuNavigation": {
+            "showBackButton": true,
+            "backButtonText": "🔙 العودة للقائمة السابقة",
+            "showMainMenuButton": true,
+            "mainMenuButtonText": "🏠 القائمة الرئيسية",
+            "backTarget": "previous"
+          },
+          "updateMode": "edit"
+        }
+      }
+    },
+    "settings": {
+      "resizeKeyboard": true,
+      "oneTimeKeyboard": false,
+      "simulatorTheme": "dark"
+    },
+    "token": "8797021636:AAHRcrW4Sw7rG5JF4J3rv4V6yUg_7aImrZg",
+    "connectionError": null,
+    "botUsername": "avavavavavsbsbot",
+    "botFirstName": "avvav",
+    "inlinePagination": {
+      "enabled": false,
+      "mode": "auto",
+      "itemsPerPage": 6,
+      "manualPages": [],
+      "navigation": {
+        "showPrevNext": false,
+        "prevText": "⬅️ السابق",
+        "nextText": "التالي ➡️",
+        "showFirstLast": false,
+        "firstText": "⏮ الأولى",
+        "lastText": "الأخيرة ⏭",
+        "position": "bottom",
+        "showPageNumbers": false,
+        "visibility": "when_needed"
+      },
+      "indicator": {
+        "enabled": false,
+        "template": "📄 صفحة {current} من {total}",
+        "showInNavigationBar": true
+      },
+      "updateMode": "edit"
+    }
+  },
+  {
+    "id": "bot_1794941378458_nc5wy",
+    "name": "بوت جديد 7",
+    "createdAt": "2026-11-17T18:49:38.458Z",
+    "updatedAt": "2026-11-17T19:00:48.986Z",
+    "isConnected": false,
+    "startMessage": {
+      "text": "البوت الشامل لمواضيع التمريض",
+      "isSaved": true,
+      "media": [],
+      "skipMessage": false,
+      "parseMode": "none"
+    },
+    "inlineButtons": [],
+    "replyButtons": [
+      {
+        "id": "btn_1794941417229_aeli",
+        "text": "Fundamental of Nursing",
+        "type": "reply",
+        "color": "primary",
+        "style": "primary",
+        "actionType": "flow",
+        "skipFlow": false,
+        "parentId": null,
+        "row": 0,
+        "order": 0
+      }
+    ],
+    "buttonFlows": {
+      "btn_1794941417229_aeli": {
+        "id": "flow_btn_1794941417229_aeli",
+        "buttonId": "btn_1794941417229_aeli",
+        "parentId": null,
+        "flowMode": "normal",
+        "message": null,
+        "media": [],
+        "subButtons": [
+          {
+            "id": "btn_sub_1794941530409_bl5p",
+            "text": "Chapter 1: Clinical Judgment & The Nursing Process",
+            "type": "inline",
+            "color": "default",
+            "actionType": "flow",
+            "skipFlow": false,
+            "parentId": "btn_1794941417229_aeli",
+            "row": 0,
+            "order": 0
+          }
+        ],
+        "actions": [],
+        "pagination": {
+          "enabled": false,
+          "mode": "auto",
+          "itemsPerPage": 6,
+          "manualPages": [],
+          "navigation": {
+            "showPrevNext": true,
+            "prevText": "⬅️ السابق",
+            "nextText": "التالي ➡️",
+            "showFirstLast": false,
+            "firstText": "⏮ الأولى",
+            "lastText": "الأخيرة ⏭",
+            "position": "bottom",
+            "showPageNumbers": false,
+            "visibility": "when_needed"
+          },
+          "indicator": {
+            "enabled": true,
+            "template": "📄 صفحة {current} من {total}",
+            "showInNavigationBar": true
+          },
+          "menuNavigation": {
+            "showBackButton": true,
+            "backButtonText": "🔙 العودة للقائمة السابقة",
+            "showMainMenuButton": true,
+            "mainMenuButtonText": "🏠 القائمة الرئيسية",
+            "backTarget": "previous"
+          },
+          "updateMode": "edit"
+        }
+      },
+      "btn_sub_1794941530409_bl5p": {
+        "id": "flow_btn_sub_1794941530409_bl5p",
+        "buttonId": "btn_sub_1794941530409_bl5p",
+        "parentId": "btn_1794941417229_aeli",
+        "flowMode": "normal",
+        "message": null,
+        "media": [],
+        "subButtons": [],
+        "actions": [],
+        "pagination": {
+          "enabled": false,
+          "mode": "auto",
+          "itemsPerPage": 6,
+          "manualPages": [],
+          "navigation": {
+            "showPrevNext": true,
+            "prevText": "⬅️ السابق",
+            "nextText": "التالي ➡️",
+            "showFirstLast": false,
+            "firstText": "⏮ الأولى",
+            "lastText": "الأخيرة ⏭",
+            "position": "bottom",
+            "showPageNumbers": false,
+            "visibility": "when_needed"
+          },
+          "indicator": {
+            "enabled": true,
+            "template": "📄 صفحة {current} من {total}",
+            "showInNavigationBar": true
+          },
+          "menuNavigation": {
+            "showBackButton": true,
+            "backButtonText": "🔙 العودة للقائمة السابقة",
+            "showMainMenuButton": true,
+            "mainMenuButtonText": "🏠 القائمة الرئيسية",
+            "backTarget": "previous"
+          },
+          "updateMode": "edit"
+        }
+      }
+    },
+    "settings": {
+      "resizeKeyboard": true,
+      "oneTimeKeyboard": false,
+      "simulatorTheme": "dark"
+    },
+    "connectionError": "فشل الاتصال بخوادم تيليجرام: The operation was aborted due to timeout"
+  },
+  {
+    "id": "bot_1795007500113_kql4l",
+    "name": "AI HUB",
+    "createdAt": "2026-11-18T13:11:40.113Z",
+    "updatedAt": "2026-11-18T13:12:31.166Z",
+    "token": "8376952478:AAGhOui4Y5MwoSDuElRBJTVmEGNIuVQRjE0",
+    "isConnected": false,
+    "connectionError": "تم نقل هذا التوكن وتفعيله في بوت آخر",
+    "botUsername": "ronaananbot",
+    "botFirstName": "rona تجريبي",
+    "startMessage": {
+      "text": "🚀 أهلاً بك في AI HUB\n\nمنصتك الذكية لإنجاز أعمالك باستخدام الذكاء الاصطناعي.\n\nاختر الخدمة التي تريد استخدامها:",
+      "isSaved": true,
+      "parseMode": "HTML",
+      "skipMessage": false,
+      "media": []
+    },
+    "inlineButtons": [],
+    "replyButtons": [],
+    "buttonFlows": {},
+    "capabilities": {
+      "canJoinGroups": true,
+      "canReadAllGroupMessages": false,
+      "supportsInlineQueries": false,
+      "hasTopicsEnabled": false,
+      "allowsUsersToCreateTopics": false,
+      "hasMainWebApp": false
+    },
+    "settings": {
+      "resizeKeyboard": true,
+      "oneTimeKeyboard": false,
+      "isPersistent": false,
+      "selective": false,
+      "simulatorTheme": "dark"
+    }
+  },
+  {
+    "id": "bot_1795007551166_mgzzs",
+    "name": "بوت الخدمات السريع",
+    "createdAt": "2026-11-18T13:12:31.166Z",
+    "updatedAt": "2026-11-18T13:12:31.166Z",
+    "token": "8376952478:AAGhOui4Y5MwoSDuElRBJTVmEGNIuVQRjE0",
+    "isConnected": true,
+    "connectionError": null,
+    "botUsername": "ronaananbot",
+    "botFirstName": "rona تجريبي",
+    "startMessage": {
+      "text": "👋 <b>أهلاً بك في بوت الخدمات!</b>\nاختر القسم المناسب من الأزرار التالية:",
+      "isSaved": true,
+      "parseMode": "HTML",
+      "skipMessage": false,
+      "media": []
+    },
+    "inlineButtons": [
+      {
+        "id": "btn_services",
+        "text": "🛍️ عرض الخدمات",
+        "type": "inline",
+        "style": "primary",
+        "color": "primary",
+        "actionType": "flow",
+        "parentId": null,
+        "row": 0,
+        "order": 0
+      },
+      {
+        "id": "btn_offer",
+        "text": "🎁 العروض اليومية",
+        "type": "inline",
+        "style": "success",
+        "color": "success",
+        "actionType": "flow",
+        "parentId": null,
+        "row": 0,
+        "order": 1
+      },
+      {
+        "id": "btn_support",
+        "text": "🌐 زيارة الموقع الرسمي",
+        "type": "inline",
+        "color": "default",
+        "actionType": "url",
+        "url": "https://telegram.org",
+        "parentId": null,
+        "row": 1,
+        "order": 0
+      }
+    ],
+    "replyButtons": [
+      {
+        "id": "btn_menu_home",
+        "text": "🏠 القائمة الرئيسية",
+        "type": "reply",
+        "color": "default",
+        "actionType": "flow",
+        "parentId": null,
+        "row": 0,
+        "order": 0
+      }
+    ],
+    "buttonFlows": {
+      "btn_services": {
+        "id": "btn_services",
+        "buttonId": "btn_services",
+        "parentId": null,
+        "message": {
+          "text": "✨ إليك قائمة خدماتنا المتاحة حالياً:",
+          "isSaved": true,
+          "parseMode": "none",
+          "updateMode": "edit",
+          "skipMessage": false,
+          "placement": "after_media"
+        },
+        "media": [],
+        "subButtons": [
+          {
+            "id": "btn_srv_1",
+            "text": "⚡ باقة البداية",
+            "type": "inline",
+            "style": "primary",
+            "color": "primary",
+            "actionType": "flow",
+            "parentId": "btn_services",
+            "row": 0,
+            "order": 0
+          }
+        ]
+      },
+      "btn_offer": {
+        "id": "btn_offer",
+        "buttonId": "btn_offer",
+        "parentId": null,
+        "message": {
+          "text": "🔥 خصم 30% لفترة محدودة على كافة الباقات!",
+          "isSaved": true,
+          "parseMode": "none",
+          "updateMode": "edit",
+          "skipMessage": false,
+          "placement": "after_media"
+        },
+        "media": [],
+        "subButtons": []
+      }
+    },
+    "capabilities": {
+      "canJoinGroups": true,
+      "canReadAllGroupMessages": false,
+      "supportsInlineQueries": false,
+      "hasTopicsEnabled": false,
+      "allowsUsersToCreateTopics": false,
+      "hasMainWebApp": false
+    },
+    "settings": {
+      "resizeKeyboard": true,
+      "oneTimeKeyboard": false,
+      "isPersistent": false,
+      "selective": false,
+      "simulatorTheme": "dark"
+    }
+  },
+  {
+    "id": "bot_1795007594087_ch9qr",
+    "name": "بوت جديد 8",
+    "createdAt": "2026-11-18T13:13:14.087Z",
+    "updatedAt": "2026-11-18T13:13:14.087Z",
+    "isConnected": false,
+    "startMessage": {
+      "text": "",
+      "isSaved": false,
+      "media": []
+    },
+    "inlineButtons": [],
+    "replyButtons": [],
+    "buttonFlows": {},
+    "settings": {
+      "resizeKeyboard": true,
+      "oneTimeKeyboard": false,
+      "simulatorTheme": "dark"
+    }
+  },
+  {
+    "id": "bot_1795007594364_x7mtx",
+    "name": "بوت جديد 9",
+    "createdAt": "2026-11-18T13:13:14.364Z",
+    "updatedAt": "2026-11-18T13:13:14.364Z",
+    "isConnected": false,
+    "startMessage": {
+      "text": "",
+      "isSaved": false,
+      "media": []
+    },
+    "inlineButtons": [],
+    "replyButtons": [],
+    "buttonFlows": {},
+    "settings": {
+      "resizeKeyboard": true,
+      "oneTimeKeyboard": false,
+      "simulatorTheme": "dark"
+    }
+  },
+  {
+    "id": "bot_1795007594692_a4bjj",
+    "name": "بوت جديد 10",
+    "createdAt": "2026-11-18T13:13:14.692Z",
+    "updatedAt": "2026-11-18T13:13:36.206Z",
+    "isConnected": false,
+    "startMessage": {
+      "text": "",
+      "isSaved": false,
+      "media": []
+    },
+    "inlineButtons": [],
+    "replyButtons": [],
+    "buttonFlows": {},
+    "settings": {
+      "resizeKeyboard": true,
+      "oneTimeKeyboard": false,
+      "simulatorTheme": "dark"
+    }
+  }
+]

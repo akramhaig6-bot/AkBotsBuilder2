@@ -1,0 +1,8 @@
+{
+  "name": "Remix Remix 3TeleCraft - Telegram Bot Studio",
+  "description": "لوحة تحكم ويب احترافية لإنشاء وإدارة بوتات تيليجرام وتصميم تدفقات الأزرار والوسائط والمحاكي الفوري وربط البوت الفعلي.",
+  "requestFramePermissions": [],
+  "majorCapabilities": [
+    "MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"
+  ]
+}
